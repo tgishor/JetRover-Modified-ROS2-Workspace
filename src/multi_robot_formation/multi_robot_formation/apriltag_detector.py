@@ -11,11 +11,14 @@ from cv_bridge import CvBridge
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_ros import TransformListener, Buffer
+from apriltag_ros.msg import AprilTagDetectionArray
 try:
     import apriltag
+    PYTHON_APRILTAG_AVAILABLE = True
 except ImportError:
-    print("Error: apriltag library not found. Install with: pip install apriltag")
+    print("Python apriltag library not found, will use ROS apriltag_ros instead")
     apriltag = None
+    PYTHON_APRILTAG_AVAILABLE = False
 
 
 class AprilTagDetector(Node):
@@ -41,11 +44,17 @@ class AprilTagDetector(Node):
         self.robot_namespace = self.get_parameter('robot_namespace').get_parameter_value().string_value
         
         # Initialize AprilTag detector
-        if apriltag is None:
-            self.get_logger().error("AprilTag library not available!")
-            raise ImportError("AprilTag library not found")
-        
-        self.detector = apriltag.Detector(apriltag.DetectorOptions(families=self.tag_family))
+        if PYTHON_APRILTAG_AVAILABLE:
+            try:
+                self.detector = apriltag.Detector(apriltag.DetectorOptions(families=self.tag_family))
+                self.use_python_apriltag = True
+                self.get_logger().info("Using Python apriltag library")
+            except Exception as e:
+                self.get_logger().warn(f"Python apriltag failed: {e}, falling back to ROS apriltag_ros")
+                self.use_python_apriltag = False
+        else:
+            self.use_python_apriltag = False
+            self.get_logger().info("Using ROS apriltag_ros package")
         
         # OpenCV bridge
         self.bridge = CvBridge()
@@ -62,19 +71,29 @@ class AprilTagDetector(Node):
         clean_namespace = self.robot_namespace.strip('/')
         
         # Subscribers
-        self.image_sub = self.create_subscription(
-            Image,
-            f'/{clean_namespace}/camera/image_raw',
-            self.image_callback,
-            10
-        )
-        
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo,
-            f'/{clean_namespace}/camera/camera_info',
-            self.camera_info_callback,
-            10
-        )
+        if self.use_python_apriltag:
+            # Subscribe to raw image for Python detection
+            self.image_sub = self.create_subscription(
+                Image,
+                f'/{clean_namespace}/camera/image_raw',
+                self.image_callback,
+                10
+            )
+            
+            self.camera_info_sub = self.create_subscription(
+                CameraInfo,
+                f'/{clean_namespace}/camera/camera_info',
+                self.camera_info_callback,
+                10
+            )
+        else:
+            # Subscribe to apriltag_ros detections
+            self.apriltag_sub = self.create_subscription(
+                AprilTagDetectionArray,
+                f'/{clean_namespace}/tag_detections',
+                self.apriltag_ros_callback,
+                10
+            )
         
         # Publishers
         self.tag_pose_pub = self.create_publisher(
@@ -97,8 +116,29 @@ class AprilTagDetector(Node):
         self.camera_matrix = np.array(msg.k).reshape(3, 3)
         self.dist_coeffs = np.array(msg.d)
 
+    def apriltag_ros_callback(self, msg):
+        """Handle AprilTag detections from apriltag_ros package."""
+        for detection in msg.detections:
+            if detection.id[0] == self.leader_tag_id:
+                # Convert detection to our pose format
+                pose_msg = PoseStamped()
+                pose_msg.header = msg.header
+                pose_msg.pose = detection.pose.pose.pose
+                
+                # Publish the pose
+                self.tag_pose_pub.publish(pose_msg)
+                
+                self.get_logger().debug(
+                    f'Leader tag detected via ROS: x={pose_msg.pose.position.x:.3f}, '
+                    f'y={pose_msg.pose.position.y:.3f}, z={pose_msg.pose.position.z:.3f}'
+                )
+                break
+
     def image_callback(self, msg):
-        """Process incoming camera images to detect AprilTags."""
+        """Process incoming camera images to detect AprilTags (Python apriltag only)."""
+        if not self.use_python_apriltag:
+            return
+            
         if self.camera_matrix is None:
             self.get_logger().warn('Camera info not received yet')
             return
