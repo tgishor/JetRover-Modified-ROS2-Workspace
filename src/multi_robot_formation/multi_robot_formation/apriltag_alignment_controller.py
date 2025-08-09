@@ -36,6 +36,7 @@ class AprilTagAlignmentController(Node):
         self.tag_pose = None
         self.is_aligned = False
         self.alignment_state = "SEARCHING"  # SEARCHING, ADJUSTING_DISTANCE, CENTERING, ALIGNED
+        self.log_counter = 0  # Counter for periodic logging
         
         # PID controllers
         self.distance_kp = 0.8
@@ -222,7 +223,8 @@ class AprilTagAlignmentController(Node):
         distance_error = abs(distance - self.target_distance)
         center_error = abs(x)
         
-        if self.get_count() % 30 == 0:  # Log every 3 seconds
+        self.log_counter += 1
+        if self.log_counter % 30 == 0:  # Log every 3 seconds (30 * 0.1s = 3s)
             self.get_logger().info(
                 f'🎯 {self.alignment_state} | '
                 f'Distance: {distance:.3f}m (target: {self.target_distance}m, error: {distance_error:.3f}m) | '
