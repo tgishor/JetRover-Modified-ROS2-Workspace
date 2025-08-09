@@ -5,6 +5,8 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Twist
 from std_msgs.msg import Bool
 import math
+import signal
+import sys
 
 class AprilTagAlignmentController(Node):
     """
@@ -21,8 +23,8 @@ class AprilTagAlignmentController(Node):
         self.declare_parameter('target_distance', 2.0)  # 2 meters
         self.declare_parameter('distance_tolerance', 0.05)  # 5cm tolerance
         self.declare_parameter('center_tolerance', 0.02)    # 2cm centering tolerance
-        self.declare_parameter('max_linear_velocity', 0.2)  # Max forward speed
-        self.declare_parameter('max_angular_velocity', 0.5) # Max turn speed
+        self.declare_parameter('max_linear_velocity', 0.05)  # Much slower max speed
+        self.declare_parameter('max_angular_velocity', 0.1) # Much slower turn speed
         self.declare_parameter('robot_namespace', 'robot_1')
         
         self.target_distance = self.get_parameter('target_distance').get_parameter_value().double_value
@@ -38,9 +40,9 @@ class AprilTagAlignmentController(Node):
         self.alignment_state = "SEARCHING"  # SEARCHING, ADJUSTING_DISTANCE, CENTERING, ALIGNED
         self.log_counter = 0  # Counter for periodic logging
         
-        # PID controllers
-        self.distance_kp = 0.8
-        self.center_kp = 1.5
+        # PID controllers - Much gentler gains
+        self.distance_kp = 0.15  # Reduced from 0.8 for smoother movement
+        self.center_kp = 0.3     # Reduced from 1.5 for smoother centering
         
         # Clean namespace
         clean_namespace = self.robot_namespace.strip('/')
@@ -73,6 +75,7 @@ class AprilTagAlignmentController(Node):
         self.get_logger().info(f'📏 Target distance: {self.target_distance}m')
         self.get_logger().info(f'⚖️ Center tolerance: ±{self.center_tolerance*100:.1f}cm')
         self.get_logger().info(f'🔍 State: {self.alignment_state}')
+        self.get_logger().info('🛑 Press Ctrl+C for emergency stop')
 
     def tag_pose_callback(self, msg):
         """Receive AprilTag pose data."""
@@ -90,22 +93,36 @@ class AprilTagAlignmentController(Node):
 
     def control_loop(self):
         """Main control loop for alignment."""
+        # Check if we have tag data
         if self.tag_pose is None:
-            self.alignment_state = "SEARCHING"
+            # No tag detected - stay in SEARCHING state and don't move
+            if self.alignment_state != "SEARCHING":
+                self.alignment_state = "SEARCHING"
+                self.get_logger().info("🏷️ Tag lost! Returning to SEARCHING state...")
+            
+            # Send explicit stop command and return
             self.stop_robot()
+            
+            # Debug logging every 2 seconds
+            if self.log_counter % 20 == 0:  # Every 2 seconds
+                self.get_logger().info("🔍 SEARCHING - Robot stationary, waiting for AprilTag detection...")
+            self.log_counter += 1
             return
         
-        # Get current tag position
+        # We have a tag - get current position
         x = self.tag_pose.pose.position.x
         z = self.tag_pose.pose.position.z
         distance = math.sqrt(x*x + z*z)  # Use X-Z plane distance for alignment
         
-        # State machine for alignment
+        # State machine for alignment (we know tag_pose is not None here)
         cmd_vel = Twist()
         
         if self.alignment_state == "SEARCHING":
+            # Tag found! Transition to distance adjustment
             self.alignment_state = "ADJUSTING_DISTANCE"
             self.get_logger().info("🔍➡️📏 Tag found! Adjusting distance...")
+            # Don't send any movement commands on first detection
+            cmd_vel = Twist()  # Stay still for one cycle to stabilize
             
         elif self.alignment_state == "ADJUSTING_DISTANCE":
             cmd_vel = self.adjust_distance(distance, x)
@@ -160,17 +177,25 @@ class AprilTagAlignmentController(Node):
         
         distance_error = current_distance - self.target_distance
         
-        # Move forward/backward to adjust distance (same as before)
-        linear_x = -self.distance_kp * distance_error  # Negative because we want to reduce error
+        # Very gentle forward/backward movement
+        linear_x = -self.distance_kp * distance_error
+        
+        # Apply velocity limits and add deadband to prevent jittery movement
+        if abs(linear_x) < 0.01:  # Deadband to prevent tiny movements
+            linear_x = 0.0
         linear_x = max(-self.max_linear_vel, min(self.max_linear_vel, linear_x))
         
-        # Use sideways movement (linear.y) for centering - NO rotation needed!
-        linear_y = -self.center_kp * 0.3 * x_offset  # Mecanum can move sideways directly
-        linear_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_y))
+        # Very gentle sideways movement for centering
+        linear_y = -self.center_kp * 0.2 * x_offset  # Even more gentle
+        
+        # Apply deadband and limits for sideways movement
+        if abs(linear_y) < 0.005:  # Deadband for centering
+            linear_y = 0.0
+        linear_y = max(-self.max_linear_vel * 0.5, min(self.max_linear_vel * 0.5, linear_y))
         
         cmd.linear.x = linear_x
-        cmd.linear.y = linear_y  # Mecanum sideways movement
-        cmd.angular.z = 0.0      # No rotation needed for centering
+        cmd.linear.y = linear_y
+        cmd.angular.z = 0.0
         
         return cmd
 
@@ -178,18 +203,25 @@ class AprilTagAlignmentController(Node):
         """Center robot alignment (X = 0) using Mecanum sideways movement."""
         cmd = Twist()
         
-        # Primary focus on centering using sideways movement (much more precise!)
-        linear_y = -self.center_kp * x_offset  # Direct sideways movement to center
-        linear_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_y))
+        # Very gentle centering movement
+        linear_y = -self.center_kp * 0.5 * x_offset  # Much more gentle centering
         
-        # Minor distance correction
+        # Apply deadband and limits
+        if abs(linear_y) < 0.005:  # Deadband for precise centering
+            linear_y = 0.0
+        linear_y = max(-self.max_linear_vel * 0.3, min(self.max_linear_vel * 0.3, linear_y))
+        
+        # Very minor distance correction during centering
         distance_error = current_distance - self.target_distance
-        linear_x = -self.distance_kp * 0.2 * distance_error  # Reduced gain for centering phase
-        linear_x = max(-self.max_linear_vel * 0.5, min(self.max_linear_vel * 0.5, linear_x))
+        linear_x = -self.distance_kp * 0.1 * distance_error  # Very gentle distance adjustment
+        
+        if abs(linear_x) < 0.01:  # Deadband
+            linear_x = 0.0
+        linear_x = max(-self.max_linear_vel * 0.3, min(self.max_linear_vel * 0.3, linear_x))
         
         cmd.linear.x = linear_x
-        cmd.linear.y = linear_y  # Mecanum sideways movement for precise centering
-        cmd.angular.z = 0.0      # No rotation needed!
+        cmd.linear.y = linear_y
+        cmd.angular.z = 0.0
         
         return cmd
 
@@ -199,17 +231,23 @@ class AprilTagAlignmentController(Node):
         
         distance_error = current_distance - self.target_distance
         
-        # Fine adjustments only
-        linear_x = -self.distance_kp * 0.3 * distance_error  # Forward/backward fine-tuning
-        linear_y = -self.center_kp * 0.3 * x_offset          # Sideways fine-tuning
+        # Very fine adjustments only with larger deadbands
+        linear_x = -self.distance_kp * 0.1 * distance_error  # Minimal fine-tuning
+        linear_y = -self.center_kp * 0.1 * x_offset          # Minimal fine-tuning
         
-        # Apply limits
-        linear_x = max(-self.max_linear_vel * 0.3, min(self.max_linear_vel * 0.3, linear_x))
-        linear_y = max(-self.max_linear_vel * 0.3, min(self.max_linear_vel * 0.3, linear_y))
+        # Larger deadbands for stable alignment
+        if abs(linear_x) < 0.01:
+            linear_x = 0.0
+        if abs(linear_y) < 0.005:
+            linear_y = 0.0
+        
+        # Very conservative limits
+        linear_x = max(-self.max_linear_vel * 0.2, min(self.max_linear_vel * 0.2, linear_x))
+        linear_y = max(-self.max_linear_vel * 0.2, min(self.max_linear_vel * 0.2, linear_y))
         
         cmd.linear.x = linear_x
-        cmd.linear.y = linear_y  # Mecanum sideways fine-tuning
-        cmd.angular.z = 0.0      # Keep robot facing forward
+        cmd.linear.y = linear_y
+        cmd.angular.z = 0.0
         
         return cmd
 
@@ -217,6 +255,17 @@ class AprilTagAlignmentController(Node):
         """Stop robot movement."""
         cmd = Twist()
         self.cmd_vel_pub.publish(cmd)
+    
+    def emergency_stop(self):
+        """Emergency stop - immediately halt all movement."""
+        self.get_logger().warn('🚨 EMERGENCY STOP ACTIVATED!')
+        
+        # Send multiple stop commands to ensure robot stops
+        for _ in range(5):
+            cmd = Twist()  # All zeros
+            self.cmd_vel_pub.publish(cmd)
+        
+        self.get_logger().info('🛑 Robot stopped. Safe to exit.')
 
     def log_status(self, x, distance):
         """Log current alignment status."""
@@ -237,10 +286,26 @@ def main(args=None):
     
     node = AprilTagAlignmentController()
     
+    def signal_handler(signum, frame):
+        """Handle Ctrl+C and other signals for emergency stop."""
+        node.get_logger().warn('🚨 Signal received! Emergency stopping...')
+        node.emergency_stop()
+        node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(0)
+    
+    # Register signal handlers for emergency stop
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Terminate
+    
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        pass
+        node.get_logger().warn('🚨 Keyboard interrupt! Emergency stopping...')
+        node.emergency_stop()
+    except Exception as e:
+        node.get_logger().error(f'Unexpected error: {e}')
+        node.emergency_stop()
     finally:
         node.destroy_node()
         rclpy.shutdown()
