@@ -28,6 +28,7 @@ setup(
             'follower_localization = multi_robot_formation.follower_localization:main',
             'formation_controller = multi_robot_formation.formation_controller:main',
             'apriltag_alignment_controller = multi_robot_formation.apriltag_alignment_controller:main',
+            'visual_alignment_monitor = multi_robot_formation.visual_alignment_monitor:main',
         ],
     },
 )

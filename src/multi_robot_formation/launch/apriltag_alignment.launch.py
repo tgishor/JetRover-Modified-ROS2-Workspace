@@ -69,6 +69,22 @@ def launch_setup(context):
                 }
             ],
             output='screen'
+        ),
+        
+        # Visual alignment monitor
+        Node(
+            package='multi_robot_formation',
+            executable='visual_alignment_monitor',
+            name='visual_alignment_monitor',
+            namespace=robot_name,
+            parameters=[
+                {
+                    'robot_namespace': robot_name,
+                    'target_distance': float(target_distance),
+                    'target_tag_id': int(tag_id)
+                }
+            ],
+            output='screen'
         )
     ]
     
