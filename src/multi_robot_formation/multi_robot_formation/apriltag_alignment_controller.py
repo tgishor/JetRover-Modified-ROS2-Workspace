@@ -37,8 +37,9 @@ class AprilTagAlignmentController(Node):
         # State variables
         self.tag_pose = None
         self.is_aligned = False
-        self.alignment_state = "SEARCHING"  # SEARCHING, ADJUSTING_DISTANCE, CENTERING, ALIGNED
+        self.alignment_state = "SEARCHING"  # SEARCHING, MOVING_TO_DISTANCE, STOPPED_AT_TARGET
         self.log_counter = 0  # Counter for periodic logging
+        self.movement_complete = False  # Flag to stop all movement when target reached
         
         # PID controllers - Much gentler gains
         self.distance_kp = 0.15  # Reduced from 0.8 for smoother movement
@@ -118,58 +119,83 @@ class AprilTagAlignmentController(Node):
         cmd_vel = Twist()
         
         if self.alignment_state == "SEARCHING":
-            # Tag found! Transition to distance adjustment
-            self.alignment_state = "ADJUSTING_DISTANCE"
-            self.get_logger().info("🔍➡️📏 Tag found! Adjusting distance...")
+            # Tag found! Transition to moving to target distance
+            self.alignment_state = "MOVING_TO_DISTANCE"
+            self.movement_complete = False
+            self.get_logger().info("🔍➡️🎯 Tag found! Moving to 2.0m distance...")
             # Don't send any movement commands on first detection
             cmd_vel = Twist()  # Stay still for one cycle to stabilize
             
-        elif self.alignment_state == "ADJUSTING_DISTANCE":
-            cmd_vel = self.adjust_distance(distance, x)
-            
-            # Check if distance is correct
+        elif self.alignment_state == "MOVING_TO_DISTANCE":
             distance_error = abs(distance - self.target_distance)
+            
+            # Check if we've reached the target distance
             if distance_error < self.distance_tolerance:
-                self.alignment_state = "CENTERING"
-                self.get_logger().info("📏➡️⚖️ Distance OK! Centering...")
+                # TARGET REACHED - STOP COMPLETELY
+                self.alignment_state = "STOPPED_AT_TARGET"
+                self.movement_complete = True
+                cmd_vel = Twist()  # Complete stop
+                self.get_logger().info(f"🎯✅ TARGET REACHED! Distance: {distance:.3f}m - ROBOT STOPPED")
+            else:
+                # Move towards target distance
+                cmd_vel = self.move_to_distance(distance)
                 
-        elif self.alignment_state == "CENTERING":
-            cmd_vel = self.center_alignment(x, distance)
+        elif self.alignment_state == "STOPPED_AT_TARGET":
+            # Robot has reached target - stay completely stopped
+            cmd_vel = Twist()  # Always send stop command
             
-            # Check if centered
-            if abs(x) < self.center_tolerance:
-                distance_error = abs(distance - self.target_distance)
-                if distance_error < self.distance_tolerance:
-                    self.alignment_state = "ALIGNED"
-                    self.get_logger().info("⚖️➡️✅ Centered! Alignment complete!")
-                else:
-                    self.alignment_state = "ADJUSTING_DISTANCE"
-                    self.get_logger().info("⚖️➡️📏 Centered but distance off, readjusting...")
-                    
-        elif self.alignment_state == "ALIGNED":
-            cmd_vel = self.maintain_alignment(x, distance)
+            # Only log occasionally
+            if self.log_counter % 50 == 0:  # Every 5 seconds
+                self.get_logger().info(f"🛑 STOPPED AT TARGET - Distance: {distance:.3f}m (Target: {self.target_distance}m)")
             
-            # Check if we've drifted
+            # Optional: If user wants to re-engage if robot drifts too far
             distance_error = abs(distance - self.target_distance)
-            center_error = abs(x)
-            
-            if distance_error > self.distance_tolerance * 2:
-                self.alignment_state = "ADJUSTING_DISTANCE"
-                self.get_logger().info("✅➡️📏 Drifted! Readjusting distance...")
-            elif center_error > self.center_tolerance * 2:
-                self.alignment_state = "CENTERING"
-                self.get_logger().info("✅➡️⚖️ Drifted! Recentering...")
+            if distance_error > self.distance_tolerance * 3:  # Allow some drift before re-engaging
+                self.alignment_state = "MOVING_TO_DISTANCE"
+                self.movement_complete = False
+                self.get_logger().warn(f"⚠️ Drifted too far ({distance:.3f}m)! Re-engaging movement...")
         
         # Publish commands and status
         self.cmd_vel_pub.publish(cmd_vel)
         
         # Publish alignment status
         status_msg = Bool()
-        status_msg.data = (self.alignment_state == "ALIGNED")
+        status_msg.data = (self.alignment_state == "STOPPED_AT_TARGET")
         self.alignment_status_pub.publish(status_msg)
         
         # Log status
         self.log_status(x, distance)
+
+    def move_to_distance(self, current_distance):
+        """Move robot to exact target distance and stop."""
+        cmd = Twist()
+        
+        distance_error = current_distance - self.target_distance
+        
+        self.get_logger().info(f"📏 Moving to target: Current={current_distance:.3f}m, Target={self.target_distance}m, Error={distance_error:+.3f}m")
+        
+        # Simple proportional control - move forward or backward to reach target
+        if abs(distance_error) > self.distance_tolerance:
+            # Calculate movement direction
+            if distance_error > 0:
+                # Too far - move backward (negative)
+                linear_x = -self.distance_kp * abs(distance_error)
+                linear_x = max(-self.max_linear_vel, linear_x)  # Limit backward speed
+            else:
+                # Too close - move forward (positive)  
+                linear_x = self.distance_kp * abs(distance_error)
+                linear_x = min(self.max_linear_vel, linear_x)   # Limit forward speed
+                
+            cmd.linear.x = linear_x
+            cmd.linear.y = 0.0  # No sideways movement - just distance
+            cmd.angular.z = 0.0 # No rotation
+        else:
+            # Within tolerance - stop completely
+            cmd.linear.x = 0.0
+            cmd.linear.y = 0.0
+            cmd.angular.z = 0.0
+            
+        return cmd
 
     def adjust_distance(self, current_distance, x_offset):
         """Adjust robot distance to target (Mecanum drive)."""
