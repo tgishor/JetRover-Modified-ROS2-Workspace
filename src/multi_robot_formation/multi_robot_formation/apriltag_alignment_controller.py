@@ -37,13 +37,17 @@ class AprilTagAlignmentController(Node):
         # State variables
         self.tag_pose = None
         self.is_aligned = False
-        self.alignment_state = "SEARCHING"  # SEARCHING, MOVING_TO_DISTANCE, STOPPED_AT_TARGET
+        self.alignment_state = "SEARCHING"  # SEARCHING, STABILIZING, MOVING_TO_DISTANCE, STOPPED_AT_TARGET
         self.log_counter = 0  # Counter for periodic logging
         self.movement_complete = False  # Flag to stop all movement when target reached
         
         # Distance smoothing to reduce noise
         self.distance_history = []
         self.max_history = 5  # Keep last 5 readings for smoothing
+        
+        # Stabilization timer - wait 3 seconds before moving
+        self.stabilization_start_time = None
+        self.stabilization_duration = 3.0  # 3 seconds
         
         # PID controllers - Much gentler gains
         self.distance_kp = 0.15  # Reduced from 0.8 for smoother movement
@@ -138,12 +142,31 @@ class AprilTagAlignmentController(Node):
         cmd_vel = Twist()
         
         if self.alignment_state == "SEARCHING":
-            # Tag found! Transition to moving to target distance
-            self.alignment_state = "MOVING_TO_DISTANCE"
+            # Tag found! Transition to stabilization phase
+            self.alignment_state = "STABILIZING"
             self.movement_complete = False
-            self.get_logger().info("🔍➡️🎯 Tag found! Moving to 2.0m distance...")
-            # Don't send any movement commands on first detection
-            cmd_vel = Twist()  # Stay still for one cycle to stabilize
+            self.stabilization_start_time = self.get_clock().now()
+            self.get_logger().info(f"🔍➡️⏱️ Tag found! Current distance: {distance:.3f}m - Stabilizing for 3 seconds before moving...")
+            # Don't send any movement commands during stabilization
+            cmd_vel = Twist()  # Stay still during stabilization
+            
+        elif self.alignment_state == "STABILIZING":
+            # Wait for 3 seconds before starting to move
+            current_time = self.get_clock().now()
+            elapsed_time = (current_time - self.stabilization_start_time).nanoseconds / 1e9
+            
+            remaining_time = self.stabilization_duration - elapsed_time
+            
+            if remaining_time > 0:
+                # Still stabilizing - stay still and show countdown
+                cmd_vel = Twist()  # Complete stop
+                if self.log_counter % 10 == 0:  # Update every 1 second
+                    self.get_logger().info(f"⏱️ Stabilizing... {remaining_time:.1f}s remaining (Current: {distance:.3f}m, Target: {self.target_distance}m)")
+            else:
+                # Stabilization complete - start moving
+                self.alignment_state = "MOVING_TO_DISTANCE"
+                self.get_logger().info(f"⏱️➡️🎯 Stabilization complete! Starting movement to {self.target_distance}m...")
+                cmd_vel = Twist()  # One more cycle of stillness before starting
             
         elif self.alignment_state == "MOVING_TO_DISTANCE":
             distance_error = abs(distance - self.target_distance)
