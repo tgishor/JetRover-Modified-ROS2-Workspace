@@ -22,7 +22,7 @@ class AprilTagPoseAnalyzer(Node):
         
         # Tag parameters
         self.tag_size = 0.10  # 10cm tag size (adjust if different)
-        self.target_tag_id = 2
+        self.target_tag_id = 1
         
         # Subscribe to camera and camera info
         self.image_sub = self.create_subscription(
