@@ -23,7 +23,7 @@ class AprilTagAlignmentController(Node):
         self.declare_parameter('target_distance', 2.0)  # 2 meters
         self.declare_parameter('distance_tolerance', 0.05)  # 5cm tolerance
         self.declare_parameter('center_tolerance', 0.005)   # 5mm ultra-precise centering tolerance
-        self.declare_parameter('max_linear_velocity', 0.05)  # Much slower max speed
+        self.declare_parameter('max_linear_velocity', 0.08)  # Faster speed for quicker alignment
         self.declare_parameter('max_angular_velocity', 0.1) # Much slower turn speed
         self.declare_parameter('robot_namespace', 'robot_1')
         
@@ -285,12 +285,12 @@ class AprilTagAlignmentController(Node):
                 linear_x = min(self.max_linear_vel * 0.5, linear_x)   # Limit forward speed
                 self.get_logger().info(f"🔜 Too far! Moving FORWARD (linear.x={linear_x:.3f}) m/s")
             
-            # Add minimum speed threshold to prevent very slow creeping
-            if abs(linear_x) < 0.01:
-                if linear_x > 0:
-                    linear_x = 0.01  # Minimum backward speed
+                         # Ensure minimum speed of 3 decimal places for motor to work
+            if abs(linear_x) < 0.005:
+                if distance_error < 0:
+                    linear_x = -0.005  # Minimum backward speed (3 decimals)
                 else:
-                    linear_x = -0.01  # Minimum forward speed
+                    linear_x = 0.005   # Minimum forward speed (3 decimals)
                 
             cmd.linear.x = linear_x
             cmd.linear.y = 0.0  # No sideways movement - just distance
@@ -338,25 +338,32 @@ class AprilTagAlignmentController(Node):
         # Focus on centering with sideways movement
         # MECANUM ADVANTAGE: Direct sideways movement without rotation!
         
-        # Ultra-precise centering with variable gain based on distance from center
-        if abs(x_offset) > 0.05:  # Far from center (>5cm)
-            center_kp = 0.12  # More aggressive when far
-        elif abs(x_offset) > 0.02:  # Medium distance (2-5cm)
-            center_kp = 0.08  # Moderate approach
-        else:  # Very close to center (<2cm)
-            center_kp = 0.04  # Ultra-gentle for final precision
+        # Faster centering with better motor compatibility
+        if abs(x_offset) > 0.03:  # Far from center (>3cm)
+            center_kp = 0.25  # Much more aggressive for speed
+        elif abs(x_offset) > 0.01:  # Medium distance (1-3cm)
+            center_kp = 0.15  # Moderate but faster approach
+        else:  # Very close to center (<1cm)
+            center_kp = 0.08  # Still responsive but controlled
         
         # Calculate sideways movement for centering
         # Positive X = tag is to the right, need to move left (negative linear.y)
         # Negative X = tag is to the left, need to move right (positive linear.y)
         linear_y = -center_kp * x_offset
         
-        # Ultra-tight deadband for 0.000 precision
-        if abs(linear_y) < 0.001:  # 1mm deadband for ultra-precision
+        # Ensure minimum 3-decimal velocity for motor operation
+        if abs(linear_y) > 0.0 and abs(linear_y) < 0.005:
+            if linear_y > 0:
+                linear_y = 0.005  # Minimum right movement
+            else:
+                linear_y = -0.005  # Minimum left movement
+        
+        # Better deadband - stop only when very close
+        if abs(x_offset) < self.center_tolerance:
             linear_y = 0.0
         
-        # Conservative speed limits for smooth movement
-        max_center_speed = self.max_linear_vel * 0.3  # Max 30% of robot's max speed
+        # Faster speed limits for quicker centering
+        max_center_speed = self.max_linear_vel * 0.6  # 60% of max speed for faster centering
         linear_y = max(-max_center_speed, min(max_center_speed, linear_y))
         
         # Very minor distance maintenance during centering
