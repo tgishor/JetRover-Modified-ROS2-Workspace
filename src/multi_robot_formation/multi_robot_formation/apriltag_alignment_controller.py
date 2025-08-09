@@ -22,7 +22,7 @@ class AprilTagAlignmentController(Node):
         # Parameters
         self.declare_parameter('target_distance', 2.0)  # 2 meters
         self.declare_parameter('distance_tolerance', 0.05)  # 5cm tolerance
-        self.declare_parameter('center_tolerance', 0.005)   # 5mm ultra-precise centering tolerance
+        self.declare_parameter('center_tolerance', 0.002)   # 5mm ultra-precise centering tolerance
         self.declare_parameter('max_linear_velocity', 0.08)  # Faster speed for quicker alignment
         self.declare_parameter('max_angular_velocity', 0.1) # Much slower turn speed
         self.declare_parameter('robot_namespace', 'robot_1')
