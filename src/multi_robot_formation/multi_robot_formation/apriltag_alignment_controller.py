@@ -53,6 +53,10 @@ class AprilTagAlignmentController(Node):
         self.stabilization_start_time = None
         self.stabilization_duration = 3.0  # 3 seconds
         
+        # Alignment lock to prevent immediate re-engagement
+        self.alignment_lock_time = None
+        self.alignment_lock_duration = 5.0  # 5 seconds lock after alignment
+        
         # PID controllers - Much gentler gains
         self.distance_kp = 0.15  # Reduced from 0.8 for smoother movement
         self.center_kp = 0.3     # Reduced from 1.5 for smoother centering
@@ -210,9 +214,10 @@ class AprilTagAlignmentController(Node):
                 if distance_error < self.distance_tolerance:
                     self.alignment_state = "ALIGNED"
                     self.movement_complete = True
+                    self.alignment_lock_time = self.get_clock().now()  # Lock alignment for 5 seconds
                     cmd_vel = Twist()  # Complete stop
                     x_mm = x * 1000  # Convert to millimeters for precision display
-                    self.get_logger().info(f"⚖️✅ PERFECTLY ALIGNED! Distance: {distance:.3f}m, X: {x_mm:+.1f}mm")
+                    self.get_logger().info(f"⚖️✅ PERFECTLY ALIGNED! Distance: {distance:.3f}m, X: {x_mm:+.1f}mm - LOCKED for 5s")
                 else:
                     # Centered but distance drifted - go back to distance adjustment
                     self.alignment_state = "MOVING_TO_DISTANCE"
@@ -230,18 +235,32 @@ class AprilTagAlignmentController(Node):
                 x_mm = x * 1000  # Convert to millimeters for precision display
                 self.get_logger().info(f"✅ PERFECTLY ALIGNED - Distance: {distance:.3f}m, X: {x_mm:+.1f}mm")
             
-            # Check if we've drifted and need realignment
+            # Check if alignment lock is still active
+            current_time = self.get_clock().now()
+            if self.alignment_lock_time is not None:
+                elapsed_lock_time = (current_time - self.alignment_lock_time).nanoseconds / 1e9
+                if elapsed_lock_time < self.alignment_lock_duration:
+                    # Still locked - don't check for drift, just stay aligned
+                    remaining_lock = self.alignment_lock_duration - elapsed_lock_time
+                    if self.log_counter % 50 == 0:  # Log lock status occasionally
+                        self.get_logger().info(f"🔒 ALIGNMENT LOCKED - {remaining_lock:.1f}s remaining")
+                    return  # Exit early, don't check drift
+            
+            # Lock expired - now check for SERIOUS drift only
             distance_error = abs(distance - self.target_distance)
             center_error = abs(x)
             
-            if distance_error > self.distance_tolerance * 2:
+            # Only re-engage if EXTREMELY drifted (not just sensor noise)
+            if distance_error > 0.30:  # 30cm drift before re-engaging (very large)
                 self.alignment_state = "MOVING_TO_DISTANCE"
                 self.movement_complete = False
-                self.get_logger().warn(f"⚠️ Distance drifted ({distance:.3f}m)! Re-engaging...")
-            elif center_error > self.center_tolerance * 2:
+                self.alignment_lock_time = None  # Reset lock
+                self.get_logger().warn(f"⚠️ Distance EXTREMELY drifted ({distance:.3f}m)! Re-engaging...")
+            elif center_error > 0.10:  # 10cm drift before re-centering (very large)
                 self.alignment_state = "CENTERING"
                 self.movement_complete = False
-                self.get_logger().warn(f"⚠️ Center drifted ({x:+.3f}m)! Re-centering...")
+                self.alignment_lock_time = None  # Reset lock
+                self.get_logger().warn(f"⚠️ Center EXTREMELY drifted ({x:+.3f}m)! Re-centering...")
         
         # Publish commands and status
         self.cmd_vel_pub.publish(cmd_vel)
