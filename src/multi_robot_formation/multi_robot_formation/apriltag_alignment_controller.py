@@ -22,7 +22,7 @@ class AprilTagAlignmentController(Node):
         # Parameters
         self.declare_parameter('target_distance', 2.0)  # 2 meters
         self.declare_parameter('distance_tolerance', 0.05)  # 5cm tolerance
-        self.declare_parameter('center_tolerance', 0.02)    # 2cm centering tolerance
+        self.declare_parameter('center_tolerance', 0.005)   # 5mm ultra-precise centering tolerance
         self.declare_parameter('max_linear_velocity', 0.05)  # Much slower max speed
         self.declare_parameter('max_angular_velocity', 0.1) # Much slower turn speed
         self.declare_parameter('robot_namespace', 'robot_1')
@@ -44,6 +44,10 @@ class AprilTagAlignmentController(Node):
         # Distance smoothing to reduce noise
         self.distance_history = []
         self.max_history = 5  # Keep last 5 readings for smoothing
+        
+        # X-position smoothing for ultra-precise centering
+        self.x_history = []
+        self.max_x_history = 10  # More smoothing for precise centering
         
         # Stabilization timer - wait 3 seconds before moving
         self.stabilization_start_time = None
@@ -82,7 +86,7 @@ class AprilTagAlignmentController(Node):
         
         self.get_logger().info(f'🎯 AprilTag Alignment Controller Started')
         self.get_logger().info(f'📏 Target distance: {self.target_distance}m')
-        self.get_logger().info(f'⚖️ Center tolerance: ±{self.center_tolerance*100:.1f}cm')
+        self.get_logger().info(f'⚖️ Center tolerance: ±{self.center_tolerance*1000:.1f}mm (ultra-precise)')
         self.get_logger().info(f'🔍 State: {self.alignment_state}')
         self.get_logger().info('🛑 Press Ctrl+C for emergency stop')
 
@@ -112,6 +116,18 @@ class AprilTagAlignmentController(Node):
         # Return moving average
         return sum(self.distance_history) / len(self.distance_history)
 
+    def smooth_x_position(self, new_x):
+        """Smooth X position measurements for ultra-precise centering."""
+        # Add new measurement to history
+        self.x_history.append(new_x)
+        
+        # Keep only recent measurements
+        if len(self.x_history) > self.max_x_history:
+            self.x_history.pop(0)
+        
+        # Return moving average for precise centering
+        return sum(self.x_history) / len(self.x_history)
+
     def control_loop(self):
         """Main control loop for alignment."""
         # Check if we have tag data
@@ -131,12 +147,13 @@ class AprilTagAlignmentController(Node):
             return
         
         # We have a tag - get current position
-        x = self.tag_pose.pose.position.x
+        raw_x = self.tag_pose.pose.position.x
         z = self.tag_pose.pose.position.z
-        raw_distance = math.sqrt(x*x + z*z)  # Use X-Z plane distance for alignment
+        raw_distance = math.sqrt(raw_x*raw_x + z*z)  # Use X-Z plane distance for alignment
         
-        # Smooth the distance measurement to reduce noise
+        # Smooth both distance and X position for ultra-precision
         distance = self.smooth_distance(raw_distance)
+        x = self.smooth_x_position(raw_x)  # Ultra-smooth X for precise centering
         
         # State machine for alignment (we know tag_pose is not None here)
         cmd_vel = Twist()
@@ -192,7 +209,8 @@ class AprilTagAlignmentController(Node):
                     self.alignment_state = "ALIGNED"
                     self.movement_complete = True
                     cmd_vel = Twist()  # Complete stop
-                    self.get_logger().info(f"⚖️✅ PERFECTLY ALIGNED! Distance: {distance:.3f}m, X: {x:+.3f}m")
+                    x_mm = x * 1000  # Convert to millimeters for precision display
+                    self.get_logger().info(f"⚖️✅ PERFECTLY ALIGNED! Distance: {distance:.3f}m, X: {x_mm:+.1f}mm")
                 else:
                     # Centered but distance drifted - go back to distance adjustment
                     self.alignment_state = "MOVING_TO_DISTANCE"
@@ -207,7 +225,8 @@ class AprilTagAlignmentController(Node):
             
             # Only log occasionally
             if self.log_counter % 50 == 0:  # Every 5 seconds
-                self.get_logger().info(f"✅ PERFECTLY ALIGNED - Distance: {distance:.3f}m, X: {x:+.3f}m")
+                x_mm = x * 1000  # Convert to millimeters for precision display
+                self.get_logger().info(f"✅ PERFECTLY ALIGNED - Distance: {distance:.3f}m, X: {x_mm:+.1f}mm")
             
             # Check if we've drifted and need realignment
             distance_error = abs(distance - self.target_distance)
@@ -318,17 +337,27 @@ class AprilTagAlignmentController(Node):
         
         # Focus on centering with sideways movement
         # MECANUM ADVANTAGE: Direct sideways movement without rotation!
-        conservative_center_kp = 0.08  # Gentle centering gain
+        
+        # Ultra-precise centering with variable gain based on distance from center
+        if abs(x_offset) > 0.05:  # Far from center (>5cm)
+            center_kp = 0.12  # More aggressive when far
+        elif abs(x_offset) > 0.02:  # Medium distance (2-5cm)
+            center_kp = 0.08  # Moderate approach
+        else:  # Very close to center (<2cm)
+            center_kp = 0.04  # Ultra-gentle for final precision
         
         # Calculate sideways movement for centering
         # Positive X = tag is to the right, need to move left (negative linear.y)
         # Negative X = tag is to the left, need to move right (positive linear.y)
-        linear_y = -conservative_center_kp * x_offset
+        linear_y = -center_kp * x_offset
         
-        # Apply deadband and limits for smooth centering
-        if abs(linear_y) < 0.003:  # Deadband for precise centering
+        # Ultra-tight deadband for 0.000 precision
+        if abs(linear_y) < 0.001:  # 1mm deadband for ultra-precision
             linear_y = 0.0
-        linear_y = max(-self.max_linear_vel * 0.4, min(self.max_linear_vel * 0.4, linear_y))
+        
+        # Conservative speed limits for smooth movement
+        max_center_speed = self.max_linear_vel * 0.3  # Max 30% of robot's max speed
+        linear_y = max(-max_center_speed, min(max_center_speed, linear_y))
         
         # Very minor distance maintenance during centering
         distance_error = current_distance - self.target_distance
@@ -344,10 +373,11 @@ class AprilTagAlignmentController(Node):
         cmd.linear.y = linear_y
         cmd.angular.z = 0.0  # No rotation needed!
         
-        # Log centering progress
+        # Log centering progress with ultra-precise display
         if self.log_counter % 10 == 0:  # Every 1 second
             direction = "LEFT" if linear_y < 0 else "RIGHT" if linear_y > 0 else "STOP"
-            self.get_logger().info(f"⚖️ Centering: X={x_offset:+.3f}m → Moving {direction} (linear.y={linear_y:+.3f})")
+            x_mm = x_offset * 1000  # Convert to millimeters for precision display
+            self.get_logger().info(f"⚖️ Ultra-Centering: X={x_mm:+.1f}mm → {direction} (speed={linear_y:+.4f}m/s)")
         
         return cmd
 
