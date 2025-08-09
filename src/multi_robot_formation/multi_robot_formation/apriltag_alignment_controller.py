@@ -23,7 +23,7 @@ class AprilTagAlignmentController(Node):
         self.declare_parameter('target_distance', 2.0)  # 2 meters
         self.declare_parameter('distance_tolerance', 0.05)  # 5cm tolerance
         self.declare_parameter('center_tolerance', 0.005)   # 5mm ultra-precise centering tolerance
-        self.declare_parameter('max_linear_velocity', 0.1)   # Fixed speed - no variable control
+        self.declare_parameter('max_linear_velocity', 0.05)  # Much slower max speed
         self.declare_parameter('max_angular_velocity', 0.1) # Much slower turn speed
         self.declare_parameter('robot_namespace', 'robot_1')
         
@@ -253,36 +253,53 @@ class AprilTagAlignmentController(Node):
         self.log_status(x, distance)
 
     def move_to_distance(self, current_distance):
-        """BANG-BANG CONTROL: Full speed (0.1 m/s) until target, then immediate stop."""
+        """Move robot to exact target distance and stop."""
         cmd = Twist()
         
         distance_error = current_distance - self.target_distance
         
-        # Log movement status
-        if self.log_counter % 10 == 0:  # Every 1 second
+        # Log less frequently to reduce noise in output
+        if self.log_counter % 10 == 0:  # Every 1 second instead of every 0.1s
             self.get_logger().info(f"📏 Moving to target: Current={current_distance:.3f}m, Target={self.target_distance}m, Error={distance_error:+.3f}m")
         
-        # BANG-BANG CONTROL: Full speed or complete stop
+        # More conservative proportional control with deadband
         if abs(distance_error) > self.distance_tolerance:
-            # Move at FULL SPEED in correct direction
+            # Use much smaller gain to prevent overshooting
+            conservative_kp = 0.05  # Very gentle approach
+            
+            # FIXED: Calculate movement direction correctly
+            # distance_error = current - target
+            # If current=1.7m, target=2.0m → error=-0.3m (too close, need to move backward)
+            # If current=2.3m, target=2.0m → error=+0.3m (too far, need to move forward)
+            
             if distance_error < 0:
-                # Too close - move BACKWARD at full speed
-                linear_x = -self.max_linear_vel  # Full speed backward
-                self.get_logger().info(f"🔙 Too close! Moving BACKWARD at FULL SPEED ({linear_x:.3f} m/s)")
+                # Too close (current < target) - need to move BACKWARD 
+                # ROBOT COORDINATE CHECK: Try NEGATIVE linear.x for backward movement
+                linear_x = distance_error * conservative_kp  # Negative for backward movement
+                linear_x = max(-self.max_linear_vel * 0.5, linear_x)  # Limit backward speed
+                self.get_logger().info(f"🔙 Too close! Moving BACKWARD (linear.x={linear_x:.3f}) m/s")
             else:
-                # Too far - move FORWARD at full speed
-                linear_x = self.max_linear_vel   # Full speed forward
-                self.get_logger().info(f"🔜 Too far! Moving FORWARD at FULL SPEED ({linear_x:.3f} m/s)")
+                # Too far (current > target) - need to move FORWARD
+                # ROBOT COORDINATE CHECK: Try POSITIVE linear.x for forward movement  
+                linear_x = distance_error * conservative_kp  # Positive for forward movement
+                linear_x = min(self.max_linear_vel * 0.5, linear_x)   # Limit forward speed
+                self.get_logger().info(f"🔜 Too far! Moving FORWARD (linear.x={linear_x:.3f}) m/s")
+            
+            # Add minimum speed threshold to prevent very slow creeping
+            if abs(linear_x) < 0.01:
+                if linear_x > 0:
+                    linear_x = 0.01  # Minimum backward speed
+                else:
+                    linear_x = -0.01  # Minimum forward speed
                 
             cmd.linear.x = linear_x
-            cmd.linear.y = 0.0  # No sideways movement
+            cmd.linear.y = 0.0  # No sideways movement - just distance
             cmd.angular.z = 0.0 # No rotation
         else:
-            # Within tolerance - IMMEDIATE STOP
+            # Within tolerance - stop completely
             cmd.linear.x = 0.0
             cmd.linear.y = 0.0
             cmd.angular.z = 0.0
-            self.get_logger().info("🛑 IMMEDIATE STOP - Target distance reached!")
             
         return cmd
 
@@ -318,39 +335,49 @@ class AprilTagAlignmentController(Node):
         """Center robot alignment (X = 0) using Mecanum sideways movement."""
         cmd = Twist()
         
-        # BANG-BANG CENTERING: Full speed until target, then immediate stop
+        # Focus on centering with sideways movement
         # MECANUM ADVANTAGE: Direct sideways movement without rotation!
         
-        # BANG-BANG CONTROL for centering
-        if abs(x_offset) > self.center_tolerance:
-            # Move at FULL SIDEWAYS SPEED in correct direction
-            if x_offset > 0:
-                # Tag is to the right - move LEFT at full speed
-                linear_y = -self.max_linear_vel  # Full speed left
-                direction = "LEFT"
-            else:
-                # Tag is to the left - move RIGHT at full speed  
-                linear_y = self.max_linear_vel   # Full speed right
-                direction = "RIGHT"
-        else:
-            # Within tolerance - IMMEDIATE STOP
-            linear_y = 0.0
-            direction = "STOP"
+        # Ultra-precise centering with variable gain based on distance from center
+        if abs(x_offset) > 0.05:  # Far from center (>5cm)
+            center_kp = 0.12  # More aggressive when far
+        elif abs(x_offset) > 0.02:  # Medium distance (2-5cm)
+            center_kp = 0.08  # Moderate approach
+        else:  # Very close to center (<2cm)
+            center_kp = 0.04  # Ultra-gentle for final precision
         
-        # No distance adjustment during centering - focus only on centering
-        linear_x = 0.0  # Pure sideways movement only
+        # Calculate sideways movement for centering
+        # Positive X = tag is to the right, need to move left (negative linear.y)
+        # Negative X = tag is to the left, need to move right (positive linear.y)
+        linear_y = -center_kp * x_offset
+        
+        # Ultra-tight deadband for 0.000 precision
+        if abs(linear_y) < 0.001:  # 1mm deadband for ultra-precision
+            linear_y = 0.0
+        
+        # Conservative speed limits for smooth movement
+        max_center_speed = self.max_linear_vel * 0.3  # Max 30% of robot's max speed
+        linear_y = max(-max_center_speed, min(max_center_speed, linear_y))
+        
+        # Very minor distance maintenance during centering
+        distance_error = current_distance - self.target_distance
+        if abs(distance_error) > self.distance_tolerance * 0.5:  # Only if significantly off
+            linear_x = distance_error * 0.02  # Very gentle distance correction
+            if abs(linear_x) < 0.005:  # Deadband
+                linear_x = 0.0
+            linear_x = max(-self.max_linear_vel * 0.2, min(self.max_linear_vel * 0.2, linear_x))
+        else:
+            linear_x = 0.0  # Don't adjust distance if close enough
         
         cmd.linear.x = linear_x
         cmd.linear.y = linear_y
         cmd.angular.z = 0.0  # No rotation needed!
         
-        # Log bang-bang centering with clear status
+        # Log centering progress with ultra-precise display
         if self.log_counter % 10 == 0:  # Every 1 second
+            direction = "LEFT" if linear_y < 0 else "RIGHT" if linear_y > 0 else "STOP"
             x_mm = x_offset * 1000  # Convert to millimeters for precision display
-            if direction == "STOP":
-                self.get_logger().info(f"⚖️ CENTERING COMPLETE: X={x_mm:+.1f}mm → STOP!")
-            else:
-                self.get_logger().info(f"⚖️ Bang-Bang Centering: X={x_mm:+.1f}mm → {direction} at FULL SPEED (0.1 m/s)")
+            self.get_logger().info(f"⚖️ Ultra-Centering: X={x_mm:+.1f}mm → {direction} (speed={linear_y:+.4f}m/s)")
         
         return cmd
 
