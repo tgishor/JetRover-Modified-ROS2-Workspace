@@ -41,6 +41,10 @@ class AprilTagAlignmentController(Node):
         self.log_counter = 0  # Counter for periodic logging
         self.movement_complete = False  # Flag to stop all movement when target reached
         
+        # Distance smoothing to reduce noise
+        self.distance_history = []
+        self.max_history = 5  # Keep last 5 readings for smoothing
+        
         # PID controllers - Much gentler gains
         self.distance_kp = 0.15  # Reduced from 0.8 for smoother movement
         self.center_kp = 0.3     # Reduced from 1.5 for smoother centering
@@ -92,6 +96,18 @@ class AprilTagAlignmentController(Node):
             f'📍 Tag position: X={x:.3f}, Y={y:.3f}, Z={z:.3f}, Distance={distance:.3f}m'
         )
 
+    def smooth_distance(self, new_distance):
+        """Smooth distance measurements to reduce noise and oscillation."""
+        # Add new measurement to history
+        self.distance_history.append(new_distance)
+        
+        # Keep only recent measurements
+        if len(self.distance_history) > self.max_history:
+            self.distance_history.pop(0)
+        
+        # Return moving average
+        return sum(self.distance_history) / len(self.distance_history)
+
     def control_loop(self):
         """Main control loop for alignment."""
         # Check if we have tag data
@@ -113,7 +129,10 @@ class AprilTagAlignmentController(Node):
         # We have a tag - get current position
         x = self.tag_pose.pose.position.x
         z = self.tag_pose.pose.position.z
-        distance = math.sqrt(x*x + z*z)  # Use X-Z plane distance for alignment
+        raw_distance = math.sqrt(x*x + z*z)  # Use X-Z plane distance for alignment
+        
+        # Smooth the distance measurement to reduce noise
+        distance = self.smooth_distance(raw_distance)
         
         # State machine for alignment (we know tag_pose is not None here)
         cmd_vel = Twist()
@@ -172,19 +191,28 @@ class AprilTagAlignmentController(Node):
         
         distance_error = current_distance - self.target_distance
         
-        self.get_logger().info(f"📏 Moving to target: Current={current_distance:.3f}m, Target={self.target_distance}m, Error={distance_error:+.3f}m")
+        # Log less frequently to reduce noise in output
+        if self.log_counter % 10 == 0:  # Every 1 second instead of every 0.1s
+            self.get_logger().info(f"📏 Moving to target: Current={current_distance:.3f}m, Target={self.target_distance}m, Error={distance_error:+.3f}m")
         
-        # Simple proportional control - move forward or backward to reach target
+        # More conservative proportional control with deadband
         if abs(distance_error) > self.distance_tolerance:
+            # Use much smaller gain to prevent overshooting
+            conservative_kp = 0.05  # Very gentle approach
+            
             # Calculate movement direction
             if distance_error > 0:
                 # Too far - move backward (negative)
-                linear_x = -self.distance_kp * abs(distance_error)
-                linear_x = max(-self.max_linear_vel, linear_x)  # Limit backward speed
+                linear_x = -conservative_kp * distance_error  # Use actual error, not abs
+                linear_x = max(-self.max_linear_vel * 0.5, linear_x)  # Limit to half max speed
             else:
                 # Too close - move forward (positive)  
-                linear_x = self.distance_kp * abs(distance_error)
-                linear_x = min(self.max_linear_vel, linear_x)   # Limit forward speed
+                linear_x = -conservative_kp * distance_error  # Use actual error, not abs
+                linear_x = min(self.max_linear_vel * 0.5, linear_x)   # Limit to half max speed
+            
+            # Add minimum speed threshold to prevent very slow creeping
+            if abs(linear_x) < 0.01:
+                linear_x = 0.01 * (1 if linear_x > 0 else -1)  # Minimum 1cm/s movement
                 
             cmd.linear.x = linear_x
             cmd.linear.y = 0.0  # No sideways movement - just distance
