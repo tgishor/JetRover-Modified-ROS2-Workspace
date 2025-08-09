@@ -159,10 +159,9 @@ class AprilTagDetector(Node):
             return
             
         try:
-            # Convert ROS image to OpenCV (same as AR app)
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "rgb8")
-            rgb_image = np.array(cv_image, dtype=np.uint8)
-            gray = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY)
+            # Convert ROS image to OpenCV
+            cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+            gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
             
             # Detect AprilTags (same method as your AR app)
             results = self.detector.detect(gray)
