@@ -11,7 +11,16 @@ from cv_bridge import CvBridge
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_ros import TransformListener, Buffer
-from apriltag_ros.msg import AprilTagDetectionArray
+
+# Try to import apriltag_ros messages
+try:
+    from apriltag_ros.msg import AprilTagDetectionArray
+    ROS_APRILTAG_AVAILABLE = True
+except ImportError:
+    print("apriltag_ros messages not found")
+    ROS_APRILTAG_AVAILABLE = False
+    AprilTagDetectionArray = None
+
 try:
     import apriltag
     PYTHON_APRILTAG_AVAILABLE = True
@@ -56,6 +65,11 @@ class AprilTagDetector(Node):
             self.use_python_apriltag = False
             self.get_logger().info("Using ROS apriltag_ros package")
         
+        # Check if ROS apriltag is available when needed
+        if not self.use_python_apriltag and not ROS_APRILTAG_AVAILABLE:
+            self.get_logger().error("Neither Python apriltag nor ROS apriltag_ros available!")
+            raise ImportError("No AprilTag detection method available")
+        
         # OpenCV bridge
         self.bridge = CvBridge()
         
@@ -88,12 +102,13 @@ class AprilTagDetector(Node):
             )
         else:
             # Subscribe to apriltag_ros detections
-            self.apriltag_sub = self.create_subscription(
-                AprilTagDetectionArray,
-                f'/{clean_namespace}/tag_detections',
-                self.apriltag_ros_callback,
-                10
-            )
+            if ROS_APRILTAG_AVAILABLE:
+                self.apriltag_sub = self.create_subscription(
+                    AprilTagDetectionArray,
+                    f'/{clean_namespace}/tag_detections',
+                    self.apriltag_ros_callback,
+                    10
+                )
         
         # Publishers
         self.tag_pose_pub = self.create_publisher(
