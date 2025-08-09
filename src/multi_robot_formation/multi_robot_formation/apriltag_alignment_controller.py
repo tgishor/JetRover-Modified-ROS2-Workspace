@@ -37,7 +37,7 @@ class AprilTagAlignmentController(Node):
         # State variables
         self.tag_pose = None
         self.is_aligned = False
-        self.alignment_state = "SEARCHING"  # SEARCHING, STABILIZING, MOVING_TO_DISTANCE, STOPPED_AT_TARGET
+        self.alignment_state = "SEARCHING"  # SEARCHING, STABILIZING, MOVING_TO_DISTANCE, CENTERING, ALIGNED
         self.log_counter = 0  # Counter for periodic logging
         self.movement_complete = False  # Flag to stop all movement when target reached
         
@@ -173,36 +173,61 @@ class AprilTagAlignmentController(Node):
             
             # Check if we've reached the target distance
             if distance_error < self.distance_tolerance:
-                # TARGET REACHED - STOP COMPLETELY
-                self.alignment_state = "STOPPED_AT_TARGET"
-                self.movement_complete = True
-                cmd_vel = Twist()  # Complete stop
-                self.get_logger().info(f"🎯✅ TARGET REACHED! Distance: {distance:.3f}m - ROBOT STOPPED")
+                # Distance reached - now start centering
+                self.alignment_state = "CENTERING"
+                cmd_vel = Twist()  # Stop for one cycle before centering
+                self.get_logger().info(f"🎯➡️⚖️ Distance reached! Starting centering... (X={x:+.3f}m)")
             else:
                 # Move towards target distance
                 cmd_vel = self.move_to_distance(distance)
                 
-        elif self.alignment_state == "STOPPED_AT_TARGET":
-            # Robot has reached target - stay completely stopped
+        elif self.alignment_state == "CENTERING":
+            center_error = abs(x)
+            distance_error = abs(distance - self.target_distance)
+            
+            # Check if we're centered
+            if center_error < self.center_tolerance:
+                # Centered! Check if distance is still good
+                if distance_error < self.distance_tolerance:
+                    self.alignment_state = "ALIGNED"
+                    self.movement_complete = True
+                    cmd_vel = Twist()  # Complete stop
+                    self.get_logger().info(f"⚖️✅ PERFECTLY ALIGNED! Distance: {distance:.3f}m, X: {x:+.3f}m")
+                else:
+                    # Centered but distance drifted - go back to distance adjustment
+                    self.alignment_state = "MOVING_TO_DISTANCE"
+                    self.get_logger().info(f"⚖️➡️🎯 Centered but distance off, readjusting...")
+            else:
+                # Move sideways to center
+                cmd_vel = self.center_alignment(x, distance)
+                
+        elif self.alignment_state == "ALIGNED":
+            # Perfect alignment achieved - stay stopped
             cmd_vel = Twist()  # Always send stop command
             
             # Only log occasionally
             if self.log_counter % 50 == 0:  # Every 5 seconds
-                self.get_logger().info(f"🛑 STOPPED AT TARGET - Distance: {distance:.3f}m (Target: {self.target_distance}m)")
+                self.get_logger().info(f"✅ PERFECTLY ALIGNED - Distance: {distance:.3f}m, X: {x:+.3f}m")
             
-            # Optional: If user wants to re-engage if robot drifts too far
+            # Check if we've drifted and need realignment
             distance_error = abs(distance - self.target_distance)
-            if distance_error > self.distance_tolerance * 3:  # Allow some drift before re-engaging
+            center_error = abs(x)
+            
+            if distance_error > self.distance_tolerance * 2:
                 self.alignment_state = "MOVING_TO_DISTANCE"
                 self.movement_complete = False
-                self.get_logger().warn(f"⚠️ Drifted too far ({distance:.3f}m)! Re-engaging movement...")
+                self.get_logger().warn(f"⚠️ Distance drifted ({distance:.3f}m)! Re-engaging...")
+            elif center_error > self.center_tolerance * 2:
+                self.alignment_state = "CENTERING"
+                self.movement_complete = False
+                self.get_logger().warn(f"⚠️ Center drifted ({x:+.3f}m)! Re-centering...")
         
         # Publish commands and status
         self.cmd_vel_pub.publish(cmd_vel)
         
         # Publish alignment status
         status_msg = Bool()
-        status_msg.data = (self.alignment_state == "STOPPED_AT_TARGET")
+        status_msg.data = (self.alignment_state == "ALIGNED")
         self.alignment_status_pub.publish(status_msg)
         
         # Log status
@@ -291,25 +316,38 @@ class AprilTagAlignmentController(Node):
         """Center robot alignment (X = 0) using Mecanum sideways movement."""
         cmd = Twist()
         
-        # Very gentle centering movement
-        linear_y = -self.center_kp * 0.5 * x_offset  # Much more gentle centering
+        # Focus on centering with sideways movement
+        # MECANUM ADVANTAGE: Direct sideways movement without rotation!
+        conservative_center_kp = 0.08  # Gentle centering gain
         
-        # Apply deadband and limits
-        if abs(linear_y) < 0.005:  # Deadband for precise centering
+        # Calculate sideways movement for centering
+        # Positive X = tag is to the right, need to move left (negative linear.y)
+        # Negative X = tag is to the left, need to move right (positive linear.y)
+        linear_y = -conservative_center_kp * x_offset
+        
+        # Apply deadband and limits for smooth centering
+        if abs(linear_y) < 0.003:  # Deadband for precise centering
             linear_y = 0.0
-        linear_y = max(-self.max_linear_vel * 0.3, min(self.max_linear_vel * 0.3, linear_y))
+        linear_y = max(-self.max_linear_vel * 0.4, min(self.max_linear_vel * 0.4, linear_y))
         
-        # Very minor distance correction during centering
+        # Very minor distance maintenance during centering
         distance_error = current_distance - self.target_distance
-        linear_x = -self.distance_kp * 0.1 * distance_error  # Very gentle distance adjustment
-        
-        if abs(linear_x) < 0.01:  # Deadband
-            linear_x = 0.0
-        linear_x = max(-self.max_linear_vel * 0.3, min(self.max_linear_vel * 0.3, linear_x))
+        if abs(distance_error) > self.distance_tolerance * 0.5:  # Only if significantly off
+            linear_x = distance_error * 0.02  # Very gentle distance correction
+            if abs(linear_x) < 0.005:  # Deadband
+                linear_x = 0.0
+            linear_x = max(-self.max_linear_vel * 0.2, min(self.max_linear_vel * 0.2, linear_x))
+        else:
+            linear_x = 0.0  # Don't adjust distance if close enough
         
         cmd.linear.x = linear_x
         cmd.linear.y = linear_y
-        cmd.angular.z = 0.0
+        cmd.angular.z = 0.0  # No rotation needed!
+        
+        # Log centering progress
+        if self.log_counter % 10 == 0:  # Every 1 second
+            direction = "LEFT" if linear_y < 0 else "RIGHT" if linear_y > 0 else "STOP"
+            self.get_logger().info(f"⚖️ Centering: X={x_offset:+.3f}m → Moving {direction} (linear.y={linear_y:+.3f})")
         
         return cmd
 
