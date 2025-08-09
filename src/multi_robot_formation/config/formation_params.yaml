@@ -5,7 +5,7 @@
 apriltag_detector:
   ros__parameters:
     tag_family: "tag36h11"
-    leader_tag_id: 0
+    leader_tag_id: 2  # Your tag shows TAG36H11-2
     tag_size: 0.10  # 10cm tag size in meters
     camera_frame: "camera_link"  # Will be prefixed with namespace
 

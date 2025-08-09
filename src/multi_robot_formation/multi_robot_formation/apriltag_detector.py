@@ -166,10 +166,17 @@ class AprilTagDetector(Node):
             # Detect AprilTags (same method as your AR app)
             results = self.detector.detect(gray)
             
-            # Process each detected tag
-            for r in results:
-                if r.tag_id == self.leader_tag_id:
-                    self.process_leader_tag(r, cv_image, msg.header)
+            # Process each detected tag (handle dictionary format like AR app)
+            for detection in results:
+                # Handle dictionary format (like your AR app)
+                if isinstance(detection, dict):
+                    tag_id = detection.get('id', -1)
+                    if tag_id == self.leader_tag_id:
+                        self.process_leader_tag_dict(detection, cv_image, msg.header)
+                else:
+                    # Handle object format
+                    if hasattr(detection, 'tag_id') and detection.tag_id == self.leader_tag_id:
+                        self.process_leader_tag(detection, cv_image, msg.header)
                     
             # Publish debug image
             if results:
@@ -180,6 +187,66 @@ class AprilTagDetector(Node):
                 
         except Exception as e:
             self.get_logger().error(f'Error processing image: {str(e)}')
+
+    def process_leader_tag_dict(self, detection, image, header):
+        """Process the detected leader tag from dictionary format (like AR app)."""
+        try:
+            # Get tag data from dictionary (same format as your AR app)
+            tag_center = detection['center']
+            tag_corners = detection['lb-rb-rt-lt']  # Same as AR app
+            
+            # Extract corners: lb, rb, rt, lt
+            lb = tag_corners[0]  # left-bottom
+            rb = tag_corners[1]  # right-bottom  
+            rt = tag_corners[2]  # right-top
+            lt = tag_corners[3]  # left-top
+            
+            # Create corners array (same as AR app line 221)
+            corners = np.array([lb, rb, lt, rt, tag_center]).reshape(5, -1)
+            
+            # Define 3D object points for the tag (same as AR app OBJP)
+            OBJP = np.array([[-1, -1,  0],
+                             [ 1, -1,  0], 
+                             [-1,  1,  0],
+                             [ 1,  1,  0],
+                             [ 0,  0,  0]], dtype=np.float32)
+            
+            # Scale by tag size
+            OBJP = OBJP * (self.tag_size / 2.0)
+            
+            # Solve PnP (same as AR app line 225)
+            ret, rvecs, tvecs = cv2.solvePnP(OBJP, corners, self.camera_matrix, self.dist_coeffs)
+            
+            if ret:
+                # Convert to pose message
+                pose_msg = PoseStamped()
+                pose_msg.header = header
+                pose_msg.header.frame_id = self.camera_frame
+                
+                # Position
+                pose_msg.pose.position.x = float(tvecs[0][0])
+                pose_msg.pose.position.y = float(tvecs[1][0])
+                pose_msg.pose.position.z = float(tvecs[2][0])
+                
+                # Convert rotation vector to quaternion
+                rotation_matrix, _ = cv2.Rodrigues(rvecs)
+                quat = self.rotation_matrix_to_quaternion(rotation_matrix)
+                
+                pose_msg.pose.orientation.x = quat[0]
+                pose_msg.pose.orientation.y = quat[1]
+                pose_msg.pose.orientation.z = quat[2]
+                pose_msg.pose.orientation.w = quat[3]
+                
+                # Publish the pose
+                self.tag_pose_pub.publish(pose_msg)
+                
+                self.get_logger().debug(
+                    f'Leader tag detected (ID {detection.get("id", -1)}): '
+                    f'x={tvecs[0][0]:.3f}, y={tvecs[1][0]:.3f}, z={tvecs[2][0]:.3f}'
+                )
+                
+        except Exception as e:
+            self.get_logger().error(f'Error processing leader tag dict: {str(e)}')
 
     def process_leader_tag(self, detection, image, header):
         """Process the detected leader tag and estimate its pose."""
@@ -271,29 +338,59 @@ class AprilTagDetector(Node):
         debug_image = image.copy()
         
         for detection in detections:
-            # Draw corners
-            corners = detection.corners.astype(int)
-            for i in range(4):
-                pt1 = tuple(corners[i])
-                pt2 = tuple(corners[(i + 1) % 4])
-                cv2.line(debug_image, pt1, pt2, (0, 255, 0), 2)
-            
-            # Draw center and ID
-            center = tuple(detection.center.astype(int))
-            cv2.circle(debug_image, center, 5, (0, 0, 255), -1)
-            cv2.putText(debug_image, str(detection.tag_id), 
-                       (center[0] - 10, center[1] + 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-            
-            # Highlight leader tag
-            if detection.tag_id == self.leader_tag_id:
-                cv2.rectangle(debug_image, 
-                            (center[0] - 50, center[1] - 50),
-                            (center[0] + 50, center[1] + 50),
-                            (0, 255, 255), 3)
-                cv2.putText(debug_image, 'LEADER', 
-                           (center[0] - 30, center[1] - 60),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            if isinstance(detection, dict):
+                # Handle dictionary format (like AR app)
+                tag_corners = detection['lb-rb-rt-lt']
+                tag_center = detection['center']
+                tag_id = detection.get('id', -1)
+                
+                # Draw corners
+                for i in range(4):
+                    pt1 = tuple(tag_corners[i].astype(int))
+                    pt2 = tuple(tag_corners[(i + 1) % 4].astype(int))
+                    cv2.line(debug_image, pt1, pt2, (0, 255, 0), 2)
+                
+                # Draw center and ID
+                center = tuple(tag_center.astype(int))
+                cv2.circle(debug_image, center, 5, (0, 0, 255), -1)
+                cv2.putText(debug_image, str(tag_id), 
+                           (center[0] - 10, center[1] + 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                
+                # Highlight leader tag
+                if tag_id == self.leader_tag_id:
+                    cv2.rectangle(debug_image, 
+                                (center[0] - 50, center[1] - 50),
+                                (center[0] + 50, center[1] + 50),
+                                (0, 255, 255), 3)
+                    cv2.putText(debug_image, 'LEADER', 
+                               (center[0] - 30, center[1] - 60),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            else:
+                # Handle object format
+                if hasattr(detection, 'corners'):
+                    corners = detection.corners.astype(int)
+                    for i in range(4):
+                        pt1 = tuple(corners[i])
+                        pt2 = tuple(corners[(i + 1) % 4])
+                        cv2.line(debug_image, pt1, pt2, (0, 255, 0), 2)
+                    
+                    # Draw center and ID
+                    center = tuple(detection.center.astype(int))
+                    cv2.circle(debug_image, center, 5, (0, 0, 255), -1)
+                    cv2.putText(debug_image, str(detection.tag_id), 
+                               (center[0] - 10, center[1] + 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                    
+                    # Highlight leader tag
+                    if detection.tag_id == self.leader_tag_id:
+                        cv2.rectangle(debug_image, 
+                                    (center[0] - 50, center[1] - 50),
+                                    (center[0] + 50, center[1] + 50),
+                                    (0, 255, 255), 3)
+                        cv2.putText(debug_image, 'LEADER', 
+                                   (center[0] - 30, center[1] - 60),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         
         return debug_image
 
