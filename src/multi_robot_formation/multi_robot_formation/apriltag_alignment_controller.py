@@ -223,19 +223,28 @@ class AprilTagAlignmentController(Node):
             # Use much smaller gain to prevent overshooting
             conservative_kp = 0.05  # Very gentle approach
             
-            # Calculate movement direction
-            if distance_error > 0:
-                # Too far - move backward (negative)
-                linear_x = -conservative_kp * distance_error  # Use actual error, not abs
-                linear_x = max(-self.max_linear_vel * 0.5, linear_x)  # Limit to half max speed
+            # FIXED: Calculate movement direction correctly
+            # distance_error = current - target
+            # If current=1.7m, target=2.0m → error=-0.3m (too close, need to move backward)
+            # If current=2.3m, target=2.0m → error=+0.3m (too far, need to move forward)
+            
+            if distance_error < 0:
+                # Too close (current < target) - need to move BACKWARD (positive linear.x)
+                linear_x = -distance_error * conservative_kp  # Make positive for backward movement
+                linear_x = min(self.max_linear_vel * 0.5, linear_x)  # Limit backward speed
+                self.get_logger().info(f"🔙 Too close! Moving BACKWARD at {linear_x:.3f} m/s")
             else:
-                # Too close - move forward (positive)  
-                linear_x = -conservative_kp * distance_error  # Use actual error, not abs
-                linear_x = min(self.max_linear_vel * 0.5, linear_x)   # Limit to half max speed
+                # Too far (current > target) - need to move FORWARD (negative linear.x)  
+                linear_x = -distance_error * conservative_kp  # Make negative for forward movement
+                linear_x = max(-self.max_linear_vel * 0.5, linear_x)   # Limit forward speed
+                self.get_logger().info(f"🔜 Too far! Moving FORWARD at {linear_x:.3f} m/s")
             
             # Add minimum speed threshold to prevent very slow creeping
             if abs(linear_x) < 0.01:
-                linear_x = 0.01 * (1 if linear_x > 0 else -1)  # Minimum 1cm/s movement
+                if linear_x > 0:
+                    linear_x = 0.01  # Minimum backward speed
+                else:
+                    linear_x = -0.01  # Minimum forward speed
                 
             cmd.linear.x = linear_x
             cmd.linear.y = 0.0  # No sideways movement - just distance
