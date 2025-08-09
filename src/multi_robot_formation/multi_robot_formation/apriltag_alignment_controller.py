@@ -229,15 +229,17 @@ class AprilTagAlignmentController(Node):
             # If current=2.3m, target=2.0m → error=+0.3m (too far, need to move forward)
             
             if distance_error < 0:
-                # Too close (current < target) - need to move BACKWARD (positive linear.x)
-                linear_x = -distance_error * conservative_kp  # Make positive for backward movement
-                linear_x = min(self.max_linear_vel * 0.5, linear_x)  # Limit backward speed
-                self.get_logger().info(f"🔙 Too close! Moving BACKWARD at {linear_x:.3f} m/s")
+                # Too close (current < target) - need to move BACKWARD 
+                # ROBOT COORDINATE CHECK: Try NEGATIVE linear.x for backward movement
+                linear_x = distance_error * conservative_kp  # Negative for backward movement
+                linear_x = max(-self.max_linear_vel * 0.5, linear_x)  # Limit backward speed
+                self.get_logger().info(f"🔙 Too close! Moving BACKWARD (linear.x={linear_x:.3f}) m/s")
             else:
-                # Too far (current > target) - need to move FORWARD (negative linear.x)  
-                linear_x = -distance_error * conservative_kp  # Make negative for forward movement
-                linear_x = max(-self.max_linear_vel * 0.5, linear_x)   # Limit forward speed
-                self.get_logger().info(f"🔜 Too far! Moving FORWARD at {linear_x:.3f} m/s")
+                # Too far (current > target) - need to move FORWARD
+                # ROBOT COORDINATE CHECK: Try POSITIVE linear.x for forward movement  
+                linear_x = distance_error * conservative_kp  # Positive for forward movement
+                linear_x = min(self.max_linear_vel * 0.5, linear_x)   # Limit forward speed
+                self.get_logger().info(f"🔜 Too far! Moving FORWARD (linear.x={linear_x:.3f}) m/s")
             
             # Add minimum speed threshold to prevent very slow creeping
             if abs(linear_x) < 0.01:
