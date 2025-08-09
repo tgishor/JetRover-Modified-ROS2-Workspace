@@ -17,12 +17,20 @@ def launch_setup(context):
     # Get package directory
     formation_package = get_package_share_directory('multi_robot_formation')
     
-    # Get robot name from environment
+    # Get robot name from environment with proper validation
     try:
         robot_name = os.environ['HOST'].strip('/')
+        if not robot_name:  # If HOST is empty or just '/'
+            robot_name = 'robot_1'
+            print(f"HOST is empty, using default: {robot_name}")
     except KeyError:
         robot_name = 'robot_1'
         print(f"HOST not set, using default: {robot_name}")
+    
+    # Ensure we have a valid robot name
+    if not robot_name or robot_name == '':
+        robot_name = 'robot_1'
+        print(f"Invalid robot name, using default: {robot_name}")
     
     # Get launch configurations
     target_distance = LaunchConfiguration('target_distance', default='2.0').perform(context)

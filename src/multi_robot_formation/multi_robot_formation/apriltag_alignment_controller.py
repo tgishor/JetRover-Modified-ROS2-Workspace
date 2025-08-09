@@ -57,8 +57,10 @@ class AprilTagAlignmentController(Node):
         self.distance_kp = 0.15  # Reduced from 0.8 for smoother movement
         self.center_kp = 0.3     # Reduced from 1.5 for smoother centering
         
-        # Clean namespace
+        # Clean namespace and handle empty namespace
         clean_namespace = self.robot_namespace.strip('/')
+        if not clean_namespace:
+            clean_namespace = 'robot_1'  # Default if empty
         
         # Subscribers
         self.tag_pose_sub = self.create_subscription(

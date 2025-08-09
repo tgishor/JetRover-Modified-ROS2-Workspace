@@ -31,8 +31,10 @@ class VisualAlignmentMonitor(Node):
         self.target_distance = self.get_parameter('target_distance').get_parameter_value().double_value
         self.target_tag_id = self.get_parameter('target_tag_id').get_parameter_value().integer_value
         
-        # Clean namespace
+        # Clean namespace and handle empty namespace
         clean_namespace = self.robot_namespace.strip('/')
+        if not clean_namespace:
+            clean_namespace = 'robot_1'  # Default if empty
         
         # OpenCV and AprilTag setup
         self.bridge = CvBridge()

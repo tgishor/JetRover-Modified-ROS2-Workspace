@@ -81,8 +81,10 @@ class AprilTagDetector(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
-        # Clean namespace (remove leading/trailing slashes)
+        # Clean namespace and handle empty namespace
         clean_namespace = self.robot_namespace.strip('/')
+        if not clean_namespace:
+            clean_namespace = 'robot_1'  # Default if empty
         
         # Subscribers
         if self.use_python_apriltag:
