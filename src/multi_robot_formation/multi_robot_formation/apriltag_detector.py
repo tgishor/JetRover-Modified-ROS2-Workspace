@@ -22,7 +22,7 @@ except ImportError:
     AprilTagDetectionArray = None
 
 try:
-    import apriltag
+    from apriltag import apriltag  # Use same import as your working AR app
     PYTHON_APRILTAG_AVAILABLE = True
 except ImportError:
     print("Python apriltag library not found, will use ROS apriltag_ros instead")
@@ -52,12 +52,12 @@ class AprilTagDetector(Node):
         self.camera_frame = self.get_parameter('camera_frame').get_parameter_value().string_value
         self.robot_namespace = self.get_parameter('robot_namespace').get_parameter_value().string_value
         
-        # Initialize AprilTag detector
+        # Initialize AprilTag detector (same as your working AR app)
         if PYTHON_APRILTAG_AVAILABLE:
             try:
-                self.detector = apriltag.Detector(apriltag.DetectorOptions(families=self.tag_family))
+                self.detector = apriltag(self.tag_family)  # Use same syntax as your AR app
                 self.use_python_apriltag = True
-                self.get_logger().info("Using Python apriltag library")
+                self.get_logger().info("Using Python apriltag library (AR app style)")
             except Exception as e:
                 self.get_logger().warn(f"Python apriltag failed: {e}, falling back to ROS apriltag_ros")
                 self.use_python_apriltag = False
@@ -86,17 +86,17 @@ class AprilTagDetector(Node):
         
         # Subscribers
         if self.use_python_apriltag:
-            # Subscribe to raw image for Python detection
+            # Subscribe to raw image for Python detection (use actual camera topics)
             self.image_sub = self.create_subscription(
                 Image,
-                f'/{clean_namespace}/camera/image_raw',
+                '/depth_cam/rgb/image_raw',  # Use actual camera topic
                 self.image_callback,
                 10
             )
             
             self.camera_info_sub = self.create_subscription(
                 CameraInfo,
-                f'/{clean_namespace}/camera/camera_info',
+                '/depth_cam/rgb/camera_info',  # Use actual camera topic  
                 self.camera_info_callback,
                 10
             )
@@ -163,7 +163,7 @@ class AprilTagDetector(Node):
             cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
             gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
             
-            # Detect AprilTags
+            # Detect AprilTags (same method as your AR app)
             results = self.detector.detect(gray)
             
             # Process each detected tag
