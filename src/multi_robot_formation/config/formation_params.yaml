@@ -1,0 +1,34 @@
+# Multi-robot formation parameters
+# Note: robot_namespace and leader_namespace are set dynamically via launch parameters
+
+# AprilTag Detection Parameters
+apriltag_detector:
+  ros__parameters:
+    tag_family: "tag36h11"
+    leader_tag_id: 0
+    tag_size: 0.10  # 10cm tag size in meters
+    camera_frame: "camera_link"  # Will be prefixed with namespace
+
+# Follower Localization Parameters  
+follower_localization:
+  ros__parameters:
+    global_frame: "map"  # Shared global map frame - NO namespace prefix
+    base_frame: "base_footprint"  # Will be prefixed with namespace
+    camera_frame: "camera_link"   # Will be prefixed with namespace
+    tag_to_robot_offset_x: -0.20  # Tag is 20cm behind robot center
+    tag_to_robot_offset_y: 0.0
+    tag_to_robot_offset_z: 0.15   # Tag height above ground
+    localization_confidence_threshold: 0.1
+
+# Formation Controller Parameters
+formation_controller:
+  ros__parameters:
+    formation_distance: 0.5  # 50cm behind leader
+    formation_angle: 3.14159  # π radians (180°) - directly behind
+    max_linear_velocity: 0.3
+    max_angular_velocity: 1.0
+    distance_tolerance: 0.1
+    angle_tolerance: 0.2
+    obstacle_distance_threshold: 0.5
+    enable_obstacle_avoidance: true
+    control_frequency: 10.0
