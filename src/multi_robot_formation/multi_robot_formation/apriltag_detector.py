@@ -11,7 +11,11 @@ from cv_bridge import CvBridge
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_ros import TransformListener, Buffer
-import apriltag
+try:
+    import apriltag
+except ImportError:
+    print("Error: apriltag library not found. Install with: pip install apriltag")
+    apriltag = None
 
 
 class AprilTagDetector(Node):
@@ -37,6 +41,10 @@ class AprilTagDetector(Node):
         self.robot_namespace = self.get_parameter('robot_namespace').get_parameter_value().string_value
         
         # Initialize AprilTag detector
+        if apriltag is None:
+            self.get_logger().error("AprilTag library not available!")
+            raise ImportError("AprilTag library not found")
+        
         self.detector = apriltag.Detector(apriltag.DetectorOptions(families=self.tag_family))
         
         # OpenCV bridge
@@ -50,17 +58,20 @@ class AprilTagDetector(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
+        # Clean namespace (remove leading/trailing slashes)
+        clean_namespace = self.robot_namespace.strip('/')
+        
         # Subscribers
         self.image_sub = self.create_subscription(
             Image,
-            f'/{self.robot_namespace}/camera/image_raw',
+            f'/{clean_namespace}/camera/image_raw',
             self.image_callback,
             10
         )
         
         self.camera_info_sub = self.create_subscription(
             CameraInfo,
-            f'/{self.robot_namespace}/camera/camera_info',
+            f'/{clean_namespace}/camera/camera_info',
             self.camera_info_callback,
             10
         )
@@ -68,13 +79,13 @@ class AprilTagDetector(Node):
         # Publishers
         self.tag_pose_pub = self.create_publisher(
             PoseStamped,
-            f'/{self.robot_namespace}/leader_tag_pose',
+            f'/{clean_namespace}/leader_tag_pose',
             10
         )
         
         self.debug_image_pub = self.create_publisher(
             Image,
-            f'/{self.robot_namespace}/apriltag_debug_image',
+            f'/{clean_namespace}/apriltag_debug_image',
             10
         )
         

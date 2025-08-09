@@ -54,10 +54,14 @@ class FollowerLocalization(Node):
         self.last_tag_detection = None
         self.leader_pose_in_map = None
         
+        # Clean namespaces (remove leading/trailing slashes)
+        clean_robot_ns = self.robot_namespace.strip('/')
+        clean_leader_ns = self.leader_namespace.strip('/')
+        
         # Subscribers
         self.tag_pose_sub = self.create_subscription(
             PoseStamped,
-            f'/{self.robot_namespace}/leader_tag_pose',
+            f'/{clean_robot_ns}/leader_tag_pose',
             self.tag_pose_callback,
             10
         )
@@ -65,13 +69,13 @@ class FollowerLocalization(Node):
         # Publishers
         self.initial_pose_pub = self.create_publisher(
             PoseWithCovarianceStamped,
-            f'/{self.robot_namespace}/initialpose',
+            f'/{clean_robot_ns}/initialpose',
             10
         )
         
         self.follower_pose_pub = self.create_publisher(
             PoseStamped,
-            f'/{self.robot_namespace}/estimated_pose',
+            f'/{clean_robot_ns}/estimated_pose',
             10
         )
         
@@ -118,9 +122,10 @@ class FollowerLocalization(Node):
         """Get the leader robot's current pose in the global map frame."""
         try:
             # Look up transform from map to leader's base frame
+            clean_leader_ns = self.leader_namespace.strip('/')
             transform = self.tf_buffer.lookup_transform(
                 self.global_frame,
-                f'{self.leader_namespace}/{self.base_frame}',
+                f'{clean_leader_ns}/{self.base_frame}',
                 rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=0.1)
             )
@@ -170,8 +175,9 @@ class FollowerLocalization(Node):
         """Transform tag pose from camera frame to robot base frame."""
         try:
             # Look up transform from base to camera
+            clean_robot_ns = self.robot_namespace.strip('/')
             transform = self.tf_buffer.lookup_transform(
-                f'{self.robot_namespace}/{self.base_frame}',
+                f'{clean_robot_ns}/{self.base_frame}',
                 tag_pose.header.frame_id,
                 tag_pose.header.stamp,
                 timeout=rclpy.duration.Duration(seconds=0.1)

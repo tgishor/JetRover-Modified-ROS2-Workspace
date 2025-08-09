@@ -65,24 +65,28 @@ class FormationController(Node):
         # QoS profiles
         qos_profile = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         
+        # Clean namespaces (remove leading/trailing slashes)
+        clean_robot_ns = self.robot_namespace.strip('/')
+        clean_leader_ns = self.leader_namespace.strip('/')
+        
         # Subscribers
         self.pose_sub = self.create_subscription(
             PoseStamped,
-            f'/{self.robot_namespace}/estimated_pose',
+            f'/{clean_robot_ns}/estimated_pose',
             self.pose_callback,
             10
         )
         
         self.tag_pose_sub = self.create_subscription(
             PoseStamped,
-            f'/{self.robot_namespace}/leader_tag_pose',
+            f'/{clean_robot_ns}/leader_tag_pose',
             self.tag_pose_callback,
             10
         )
         
         self.laser_sub = self.create_subscription(
             LaserScan,
-            f'/{self.robot_namespace}/scan',
+            f'/{clean_robot_ns}/scan',
             self.laser_callback,
             qos_profile
         )
@@ -90,13 +94,13 @@ class FormationController(Node):
         # Publishers
         self.cmd_vel_pub = self.create_publisher(
             Twist,
-            f'/{self.robot_namespace}/cmd_vel',
+            f'/{clean_robot_ns}/cmd_vel',
             10
         )
         
         self.formation_goal_pub = self.create_publisher(
             PoseStamped,
-            f'/{self.robot_namespace}/formation_goal',
+            f'/{clean_robot_ns}/formation_goal',
             10
         )
         
@@ -164,9 +168,10 @@ class FormationController(Node):
     def get_leader_pose(self):
         """Get leader's current pose."""
         try:
+            clean_leader_ns = self.leader_namespace.strip('/')
             transform = self.tf_buffer.lookup_transform(
                 'map',
-                f'{self.leader_namespace}/base_footprint',
+                f'{clean_leader_ns}/base_footprint',
                 rclpy.time.Time(),
                 timeout=rclpy.duration.Duration(seconds=0.1)
             )

@@ -10,8 +10,8 @@ from launch_ros.actions import Node
 
 def launch_setup(context):
     """
-    Launch formation control using environment variables (HOST/MASTER).
-    This matches your existing JetRover system approach.
+    Test launch for formation control - starts only formation controller and localization.
+    Use this for testing without AprilTag dependency.
     """
     
     # Get package directory
@@ -24,38 +24,19 @@ def launch_setup(context):
     except KeyError as e:
         print(f"ERROR: Environment variable {e} not set!")
         print("Please set HOST and MASTER environment variables")
-        print("Example: export HOST=follower && export MASTER=leader")
+        print("Example: export HOST=robot_1 && export MASTER=robot_1")
         return []
     
     # Get launch configurations with environment defaults
-    tag_id = LaunchConfiguration('tag_id', default='0').perform(context)
     formation_distance = LaunchConfiguration('formation_distance', default='0.5').perform(context)
     
-    print(f"🤖 Formation Control Starting:")
+    print(f"🤖 Formation Control Test Starting:")
     print(f"   Follower: {follower_name}")
     print(f"   Leader: {leader_name}")
     print(f"   Distance: {formation_distance}m")
-    print(f"   Tag ID: {tag_id}")
     
-    # Formation control nodes
+    # Formation control nodes (without AprilTag detector for testing)
     formation_nodes = [
-        # AprilTag detector
-        Node(
-            package='multi_robot_formation',
-            executable='apriltag_detector',
-            name='apriltag_detector',
-            namespace=follower_name,
-            parameters=[
-                os.path.join(formation_package, 'config', 'formation_params.yaml'),
-                {
-                    'robot_namespace': follower_name,
-                    'leader_tag_id': int(tag_id),
-                    'camera_frame': f'{follower_name}/camera_link'
-                }
-            ],
-            output='screen'
-        ),
-        
         # Follower localization
         Node(
             package='multi_robot_formation',
@@ -97,15 +78,9 @@ def launch_setup(context):
 
 
 def generate_launch_description():
-    """Generate launch description for environment-based formation control."""
+    """Generate launch description for testing formation control."""
     
     # Declare launch arguments
-    tag_id_arg = DeclareLaunchArgument(
-        'tag_id',
-        default_value='0',
-        description='AprilTag ID on leader robot'
-    )
-    
     formation_distance_arg = DeclareLaunchArgument(
         'formation_distance',
         default_value='0.5',
@@ -113,7 +88,6 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
-        tag_id_arg,
         formation_distance_arg,
         
         # Start formation control with small delay
