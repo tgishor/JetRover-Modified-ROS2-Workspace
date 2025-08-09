@@ -27,6 +27,7 @@ setup(
             'apriltag_detector = multi_robot_formation.apriltag_detector:main',
             'follower_localization = multi_robot_formation.follower_localization:main',
             'formation_controller = multi_robot_formation.formation_controller:main',
+            'apriltag_alignment_controller = multi_robot_formation.apriltag_alignment_controller:main',
         ],
     },
 )
