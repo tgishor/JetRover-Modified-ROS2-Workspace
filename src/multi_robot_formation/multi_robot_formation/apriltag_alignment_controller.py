@@ -102,6 +102,7 @@ class AprilTagAlignmentController(Node):
         self.home_formation_set = False
         self.search_revert_phase = 0  # 0=not started, 1=joints_4_3_moving, 2=joint_2_moving, 3=complete
         self.search_revert_start_time = None
+        self.servo_controller_ready = False
         
         # Control timer
         self.control_timer = self.create_timer(0.1, self.control_loop)  # 10Hz
@@ -471,6 +472,12 @@ class AprilTagAlignmentController(Node):
         """Set arm to search formation with sequential movement: Joint4&3 first, then Joint2."""
         if self.search_formation_set:
             return  # Already set, don't repeat
+        
+        # Check if servo controller is ready
+        if not self.servo_controller_ready and self.arm_pub.get_subscription_count() == 0:
+            # Skip arm control if servo controller isn't ready
+            self.get_logger().debug("🔇 Skipping arm control - servo controller not ready")
+            return
             
         # ALWAYS use sequential movement for search formation (for clearance)
         self.get_logger().info(f"🦾 Setting SEARCH formation with sequential movement (phase={self.search_revert_phase})")
@@ -539,6 +546,10 @@ class AprilTagAlignmentController(Node):
                     self.search_revert_phase = 3
                     self.search_formation_set = True
                     self.get_logger().info("🦾 ✅ Search formation COMPLETE: J4=825, J3=200, J2=75")
+        
+        elif self.search_revert_phase == 3:
+            # Formation complete - don't keep trying to set it
+            return
 
     def set_home_formation(self):
         """Set arm to home formation (all joints 500) after tag found and stable."""
@@ -597,17 +608,37 @@ class AprilTagAlignmentController(Node):
         self.get_logger().info(f"🔗 Servo controller subscribers: {subscribers}")
         
         if subscribers == 0:
-            self.get_logger().warn("⚠️ No subscribers to /robot_2/servo_controller! Is the servo controller running?")
+            self.get_logger().warn("⚠️ No subscribers to /robot_2/servo_controller! Servo controller not ready yet.")
+            # Retry in 2 seconds
+            self.create_timer(2.0, self.retry_servo_connection)
         else:
             self.get_logger().info("✅ Servo controller is listening")
-        
-        # Start search formation directly (skip the complex test)
-        self.get_logger().info("🦾 Starting search formation...")
-        self.set_search_formation()
+            self.servo_controller_ready = True
+            self.get_logger().info("🦾 Starting search formation...")
+            self.set_search_formation()
         
         # Cancel this timer after first execution
         for timer in self._timers:
             if timer.callback == self.delayed_search_formation_init:
+                timer.cancel()
+                break
+    
+    def retry_servo_connection(self):
+        """Retry connecting to servo controller."""
+        subscribers = self.arm_pub.get_subscription_count()
+        
+        if subscribers > 0:
+            self.get_logger().info("✅ Servo controller connected! Starting search formation...")
+            self.servo_controller_ready = True
+            self.set_search_formation()
+        else:
+            self.get_logger().info("🔄 Still waiting for servo controller... will continue without arm control")
+            # Don't retry indefinitely - just continue without arm control
+            self.servo_controller_ready = False
+        
+        # Cancel this timer
+        for timer in self._timers:
+            if timer.callback == self.retry_servo_connection:
                 timer.cancel()
                 break
 
