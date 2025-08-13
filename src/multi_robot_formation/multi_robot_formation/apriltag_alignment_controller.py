@@ -4,6 +4,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Twist
 from std_msgs.msg import Bool
+from servo_controller_msgs.msg import ServosPosition, ServoPosition
 import math
 import signal
 import sys
@@ -87,6 +88,17 @@ class AprilTagAlignmentController(Node):
             10
         )
         
+        # Arm control publisher
+        self.arm_pub = self.create_publisher(
+            ServosPosition,
+            f'/{clean_namespace}/servo_controller',
+            10
+        )
+        
+        # Arm formation tracking
+        self.search_formation_set = False
+        self.home_formation_set = False
+        
         # Control timer
         self.control_timer = self.create_timer(0.1, self.control_loop)  # 10Hz
         
@@ -95,6 +107,10 @@ class AprilTagAlignmentController(Node):
         self.get_logger().info(f'⚖️ Center tolerance: ±{self.center_tolerance*1000:.1f}mm (ultra-precise)')
         self.get_logger().info(f'🔍 State: {self.alignment_state}')
         self.get_logger().info('🛑 Press Ctrl+C for emergency stop')
+        
+        # Set initial arm search formation
+        self.get_logger().info('🦾 Initializing arm to search formation...')
+        self.set_search_formation()
 
     def tag_pose_callback(self, msg):
         """Receive AprilTag pose data."""
@@ -141,7 +157,12 @@ class AprilTagAlignmentController(Node):
             # No tag detected - stay in SEARCHING state and don't move
             if self.alignment_state != "SEARCHING":
                 self.alignment_state = "SEARCHING"
+                self.search_formation_set = False  # Reset search formation flag
+                self.home_formation_set = False    # Reset home formation flag
                 self.get_logger().info("🏷️ Tag lost! Returning to SEARCHING state...")
+            
+            # Set arm to search formation during SEARCHING phase
+            self.set_search_formation()
             
             # Send explicit stop command and return
             self.stop_robot()
@@ -189,6 +210,10 @@ class AprilTagAlignmentController(Node):
                 # Stabilization complete - start moving
                 self.alignment_state = "MOVING_TO_DISTANCE"
                 self.get_logger().info(f"⏱️➡️🎯 Stabilization complete! Starting movement to {self.target_distance}m...")
+                
+                # Move arm to home position now that tag is found and stable
+                self.set_home_formation()
+                
                 cmd_vel = Twist()  # One more cycle of stillness before starting
             
         elif self.alignment_state == "MOVING_TO_DISTANCE":
@@ -434,6 +459,73 @@ class AprilTagAlignmentController(Node):
         cmd.angular.z = 0.0
         
         return cmd
+
+    def set_search_formation(self):
+        """Set arm to search formation during SEARCHING phase."""
+        if self.search_formation_set:
+            return  # Already set, don't repeat
+            
+        self.get_logger().info("🦾 Setting arm to SEARCH formation...")
+        
+        msg = ServosPosition()
+        msg.position_unit = 'pulse'
+        msg.duration = 2.0  # 2 second smooth movement
+        
+        # Search formation positions as specified
+        search_positions = {
+            2: 75,    # Joint2: 75
+            3: 200,   # Joint3: 200  
+            4: 825,   # Joint4: 825
+        }
+        
+        for servo_id, position in search_positions.items():
+            # Clamp position to safe range
+            position = max(50, min(950, position))
+            
+            servo = ServoPosition()
+            servo.id = servo_id
+            servo.position = float(position)
+            msg.position.append(servo)
+        
+        self.arm_pub.publish(msg)
+        self.search_formation_set = True
+        
+        self.get_logger().info(f"🦾 Search formation set: Joint2={search_positions[2]}, Joint3={search_positions[3]}, Joint4={search_positions[4]}")
+
+    def set_home_formation(self):
+        """Set arm to home formation (all joints 500) after tag found and stable."""
+        if self.home_formation_set:
+            return  # Already set, don't repeat
+            
+        self.get_logger().info("🏠 Setting arm to HOME formation...")
+        
+        msg = ServosPosition()
+        msg.position_unit = 'pulse'
+        msg.duration = 1.5  # 1.5 second smooth movement to home
+        
+        # Home formation positions (all joints at 500)
+        home_positions = {
+            1: 500,   # Joint1: 500 (Base)
+            2: 500,   # Joint2: 500 (Shoulder)
+            3: 500,   # Joint3: 500 (Elbow)
+            4: 500,   # Joint4: 500 (Wrist1)
+            5: 500,   # Joint5: 500 (Wrist2)
+            10: 500   # Gripper: 500
+        }
+        
+        for servo_id, position in home_positions.items():
+            # Clamp position to safe range
+            position = max(50, min(950, position))
+            
+            servo = ServoPosition()
+            servo.id = servo_id
+            servo.position = float(position)
+            msg.position.append(servo)
+        
+        self.arm_pub.publish(msg)
+        self.home_formation_set = True
+        
+        self.get_logger().info("🏠 Home formation set: All joints at 500 pulses")
 
     def stop_robot(self):
         """Stop robot movement."""
