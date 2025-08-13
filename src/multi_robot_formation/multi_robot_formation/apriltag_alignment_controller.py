@@ -89,11 +89,13 @@ class AprilTagAlignmentController(Node):
         )
         
         # Arm control publisher
+        servo_topic = f'/{clean_namespace}/servo_controller'
         self.arm_pub = self.create_publisher(
             ServosPosition,
-            f'/{clean_namespace}/servo_controller',
+            servo_topic,
             10
         )
+        self.get_logger().info(f'🦾 Arm publisher created on topic: {servo_topic}')
         
         # Arm formation tracking
         self.search_formation_set = False
@@ -468,69 +470,76 @@ class AprilTagAlignmentController(Node):
         if self.search_formation_set:
             return  # Already set, don't repeat
             
-        # Handle sequential revert from home to search formation
-        current_time = self.get_clock().now()
-        
-        if self.search_revert_phase == 0:
-            # Phase 1: Move Joint4 and Joint3 first (for clearance)
-            self.get_logger().info("🦾 Search formation Phase 1: Moving Joint4 & Joint3 first...")
+        # Check if we need sequential movement (coming from home position)
+        if self.home_formation_set:
+            # We're coming from home position - use sequential movement for clearance
+            self.get_logger().info(f"🦾 Coming from HOME - Using sequential movement for clearance... (phase={self.search_revert_phase})")
+            current_time = self.get_clock().now()
             
-            msg = ServosPosition()
-            msg.position_unit = 'pulse'
-            msg.duration = 1.0  # 1 second movement
-            
-            # Move Joint4 and Joint3 first
-            phase1_positions = {
-                4: 825,   # Joint4: 825 (Wrist1)
-                3: 200,   # Joint3: 200 (Elbow)
-            }
-            
-            for servo_id, position in phase1_positions.items():
-                position = max(50, min(950, position))
-                servo = ServoPosition()
-                servo.id = servo_id
-                servo.position = float(position)
-                msg.position.append(servo)
-            
-            self.arm_pub.publish(msg)
-            self.search_revert_phase = 1
-            self.search_revert_start_time = current_time
-            self.get_logger().info("🦾 Phase 1 complete: Joint4=825, Joint3=200")
-            
-        elif self.search_revert_phase == 1:
-            # Wait 1.5 seconds before moving Joint2
-            if self.search_revert_start_time is not None:
-                elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
-                if elapsed >= 1.5:
-                    # Phase 2: Move Joint2 last
-                    self.get_logger().info("🦾 Search formation Phase 2: Moving Joint2 last...")
-                    
-                    msg = ServosPosition()
-                    msg.position_unit = 'pulse'
-                    msg.duration = 1.0  # 1 second movement
-                    
-                    # Move Joint2 last
+            if self.search_revert_phase == 0:
+                # Phase 1: Move Joint4 and Joint3 first (for clearance)
+                self.get_logger().info("🦾 Search formation Phase 1: Moving Joint4 & Joint3 first...")
+                
+                msg = ServosPosition()
+                msg.position_unit = 'pulse'
+                msg.duration = 1.0  # 1 second movement
+                
+                # Move Joint4 and Joint3 first
+                phase1_positions = {
+                    4: 825,   # Joint4: 825 (Wrist1)
+                    3: 200,   # Joint3: 200 (Elbow)
+                }
+                
+                for servo_id, position in phase1_positions.items():
+                    position = max(50, min(950, position))
                     servo = ServoPosition()
-                    servo.id = 2
-                    servo.position = float(75)  # Joint2: 75
+                    servo.id = servo_id
+                    servo.position = float(position)
                     msg.position.append(servo)
-                    
-                    self.arm_pub.publish(msg)
-                    self.search_revert_phase = 2
-                    self.get_logger().info("🦾 Phase 2 complete: Joint2=75")
-                    
-        elif self.search_revert_phase == 2:
-            # Wait 1.2 seconds for final movement to complete
-            if self.search_revert_start_time is not None:
-                elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
-                if elapsed >= 2.7:  # 1.5 + 1.2 = 2.7 total
-                    self.search_revert_phase = 3
-                    self.search_formation_set = True
-                    self.get_logger().info("🦾 ✅ Search formation COMPLETE: Sequential movement finished!")
-                    
-        # If this is the first time (not reverting from home), do instant search formation
-        if self.search_revert_phase == 0 and not self.home_formation_set:
-            self.get_logger().info("🦾 Initial search formation setup...")
+                    self.get_logger().info(f"🔧 DEBUG: Added servo {servo_id} -> {position} to message")
+                
+                self.arm_pub.publish(msg)
+                self.search_revert_phase = 1
+                self.search_revert_start_time = current_time
+                self.get_logger().info("🦾 Phase 1 sent: Joint4=825, Joint3=200")
+                self.get_logger().info(f"🔧 DEBUG: Published message with {len(msg.position)} servos, duration={msg.duration}, unit={msg.position_unit}")
+                
+            elif self.search_revert_phase == 1:
+                # Wait 1.5 seconds before moving Joint2
+                if self.search_revert_start_time is not None:
+                    elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
+                    if self.log_counter % 10 == 0:  # Log every 1 second
+                        self.get_logger().info(f"🕐 Waiting for Joint2... {elapsed:.1f}s / 1.5s")
+                    if elapsed >= 1.5:
+                        # Phase 2: Move Joint2 last
+                        self.get_logger().info("🦾 Search formation Phase 2: Moving Joint2 last...")
+                        
+                        msg = ServosPosition()
+                        msg.position_unit = 'pulse'
+                        msg.duration = 1.0  # 1 second movement
+                        
+                        # Move Joint2 last
+                        servo = ServoPosition()
+                        servo.id = 2
+                        servo.position = float(75)  # Joint2: 75
+                        msg.position.append(servo)
+                        
+                        self.arm_pub.publish(msg)
+                        self.search_revert_phase = 2
+                        self.get_logger().info("🦾 Phase 2 sent: Joint2=75")
+                        self.get_logger().info(f"🔧 DEBUG: Published Joint2 message with {len(msg.position)} servos, duration={msg.duration}, unit={msg.position_unit}")
+                        
+            elif self.search_revert_phase == 2:
+                # Wait 1.2 seconds for final movement to complete
+                if self.search_revert_start_time is not None:
+                    elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
+                    if elapsed >= 2.7:  # 1.5 + 1.2 = 2.7 total
+                        self.search_revert_phase = 3
+                        self.search_formation_set = True
+                        self.get_logger().info("🦾 ✅ Search formation COMPLETE: Sequential movement finished!")
+        else:
+            # Initial search formation setup or not coming from home - move all at once
+            self.get_logger().info("🦾 Initial search formation setup - All joints at once...")
             
             msg = ServosPosition()
             msg.position_unit = 'pulse'
@@ -588,6 +597,22 @@ class AprilTagAlignmentController(Node):
         self.home_formation_set = True
         
         self.get_logger().info("🏠 Home formation set: All joints at 500 pulses")
+
+    def test_single_servo(self, servo_id, position):
+        """Test method to move a single servo for debugging."""
+        self.get_logger().info(f"🔧 TEST: Moving servo {servo_id} to position {position}")
+        
+        msg = ServosPosition()
+        msg.position_unit = 'pulse'
+        msg.duration = 1.0
+        
+        servo = ServoPosition()
+        servo.id = servo_id
+        servo.position = float(position)
+        msg.position.append(servo)
+        
+        self.arm_pub.publish(msg)
+        self.get_logger().info(f"🔧 TEST: Command sent for servo {servo_id}")
 
     def stop_robot(self):
         """Stop robot movement."""
