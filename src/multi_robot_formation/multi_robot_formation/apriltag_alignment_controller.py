@@ -98,6 +98,8 @@ class AprilTagAlignmentController(Node):
         # Arm formation tracking
         self.search_formation_set = False
         self.home_formation_set = False
+        self.search_revert_phase = 0  # 0=not started, 1=joints_4_3_moving, 2=joint_2_moving, 3=complete
+        self.search_revert_start_time = None
         
         # Control timer
         self.control_timer = self.create_timer(0.1, self.control_loop)  # 10Hz
@@ -159,6 +161,8 @@ class AprilTagAlignmentController(Node):
                 self.alignment_state = "SEARCHING"
                 self.search_formation_set = False  # Reset search formation flag
                 self.home_formation_set = False    # Reset home formation flag
+                self.search_revert_phase = 0       # Reset sequential revert phase
+                self.search_revert_start_time = None
                 self.get_logger().info("🏷️ Tag lost! Returning to SEARCHING state...")
             
             # Set arm to search formation during SEARCHING phase
@@ -210,10 +214,6 @@ class AprilTagAlignmentController(Node):
                 # Stabilization complete - start moving
                 self.alignment_state = "MOVING_TO_DISTANCE"
                 self.get_logger().info(f"⏱️➡️🎯 Stabilization complete! Starting movement to {self.target_distance}m...")
-                
-                # Move arm to home position now that tag is found and stable
-                self.set_home_formation()
-                
                 cmd_vel = Twist()  # One more cycle of stillness before starting
             
         elif self.alignment_state == "MOVING_TO_DISTANCE":
@@ -243,6 +243,9 @@ class AprilTagAlignmentController(Node):
                     cmd_vel = Twist()  # Complete stop
                     x_mm = x * 1000  # Convert to millimeters for precision display
                     self.get_logger().info(f"⚖️✅ PERFECTLY ALIGNED! Distance: {distance:.3f}m, X: {x_mm:+.1f}mm - LOCKED for 5s")
+                    
+                    # Move arm to home position now that robot is perfectly aligned
+                    self.set_home_formation()
                 else:
                     # Centered but distance drifted - go back to distance adjustment
                     self.alignment_state = "MOVING_TO_DISTANCE"
@@ -461,36 +464,95 @@ class AprilTagAlignmentController(Node):
         return cmd
 
     def set_search_formation(self):
-        """Set arm to search formation during SEARCHING phase."""
+        """Set arm to search formation with sequential movement for clearance."""
         if self.search_formation_set:
             return  # Already set, don't repeat
             
-        self.get_logger().info("🦾 Setting arm to SEARCH formation...")
+        # Handle sequential revert from home to search formation
+        current_time = self.get_clock().now()
         
-        msg = ServosPosition()
-        msg.position_unit = 'pulse'
-        msg.duration = 2.0  # 2 second smooth movement
-        
-        # Search formation positions as specified
-        search_positions = {
-            2: 75,    # Joint2: 75
-            3: 200,   # Joint3: 200  
-            4: 825,   # Joint4: 825
-        }
-        
-        for servo_id, position in search_positions.items():
-            # Clamp position to safe range
-            position = max(50, min(950, position))
+        if self.search_revert_phase == 0:
+            # Phase 1: Move Joint4 and Joint3 first (for clearance)
+            self.get_logger().info("🦾 Search formation Phase 1: Moving Joint4 & Joint3 first...")
             
-            servo = ServoPosition()
-            servo.id = servo_id
-            servo.position = float(position)
-            msg.position.append(servo)
-        
-        self.arm_pub.publish(msg)
-        self.search_formation_set = True
-        
-        self.get_logger().info(f"🦾 Search formation set: Joint2={search_positions[2]}, Joint3={search_positions[3]}, Joint4={search_positions[4]}")
+            msg = ServosPosition()
+            msg.position_unit = 'pulse'
+            msg.duration = 1.0  # 1 second movement
+            
+            # Move Joint4 and Joint3 first
+            phase1_positions = {
+                4: 825,   # Joint4: 825 (Wrist1)
+                3: 200,   # Joint3: 200 (Elbow)
+            }
+            
+            for servo_id, position in phase1_positions.items():
+                position = max(50, min(950, position))
+                servo = ServoPosition()
+                servo.id = servo_id
+                servo.position = float(position)
+                msg.position.append(servo)
+            
+            self.arm_pub.publish(msg)
+            self.search_revert_phase = 1
+            self.search_revert_start_time = current_time
+            self.get_logger().info("🦾 Phase 1 complete: Joint4=825, Joint3=200")
+            
+        elif self.search_revert_phase == 1:
+            # Wait 1.5 seconds before moving Joint2
+            if self.search_revert_start_time is not None:
+                elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
+                if elapsed >= 1.5:
+                    # Phase 2: Move Joint2 last
+                    self.get_logger().info("🦾 Search formation Phase 2: Moving Joint2 last...")
+                    
+                    msg = ServosPosition()
+                    msg.position_unit = 'pulse'
+                    msg.duration = 1.0  # 1 second movement
+                    
+                    # Move Joint2 last
+                    servo = ServoPosition()
+                    servo.id = 2
+                    servo.position = float(75)  # Joint2: 75
+                    msg.position.append(servo)
+                    
+                    self.arm_pub.publish(msg)
+                    self.search_revert_phase = 2
+                    self.get_logger().info("🦾 Phase 2 complete: Joint2=75")
+                    
+        elif self.search_revert_phase == 2:
+            # Wait 1.2 seconds for final movement to complete
+            if self.search_revert_start_time is not None:
+                elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
+                if elapsed >= 2.7:  # 1.5 + 1.2 = 2.7 total
+                    self.search_revert_phase = 3
+                    self.search_formation_set = True
+                    self.get_logger().info("🦾 ✅ Search formation COMPLETE: Sequential movement finished!")
+                    
+        # If this is the first time (not reverting from home), do instant search formation
+        if self.search_revert_phase == 0 and not self.home_formation_set:
+            self.get_logger().info("🦾 Initial search formation setup...")
+            
+            msg = ServosPosition()
+            msg.position_unit = 'pulse'
+            msg.duration = 2.0  # 2 second smooth movement
+            
+            # Search formation positions - all at once for initial setup
+            search_positions = {
+                2: 75,    # Joint2: 75
+                3: 200,   # Joint3: 200  
+                4: 825,   # Joint4: 825
+            }
+            
+            for servo_id, position in search_positions.items():
+                position = max(50, min(950, position))
+                servo = ServoPosition()
+                servo.id = servo_id
+                servo.position = float(position)
+                msg.position.append(servo)
+            
+            self.arm_pub.publish(msg)
+            self.search_formation_set = True
+            self.get_logger().info("🦾 Initial search formation set: Joint2=75, Joint3=200, Joint4=825")
 
     def set_home_formation(self):
         """Set arm to home formation (all joints 500) after tag found and stable."""
