@@ -114,7 +114,9 @@ class AprilTagAlignmentController(Node):
         
         # Set initial arm search formation
         self.get_logger().info('🦾 Initializing arm to search formation...')
-        self.set_search_formation()
+        
+        # Add a small delay to ensure publisher is connected
+        self.create_timer(1.0, self.delayed_search_formation_init)
 
     def tag_pose_callback(self, msg):
         """Receive AprilTag pose data."""
@@ -500,6 +502,9 @@ class AprilTagAlignmentController(Node):
             self.search_revert_phase = 1
             self.search_revert_start_time = current_time
             self.get_logger().info("🦾 Phase 1 sent: Joint4=825, Joint3=200")
+            self.get_logger().info(f"📤 Message details: {len(msg.position)} servos, duration={msg.duration}s, unit={msg.position_unit}")
+            for servo in msg.position:
+                self.get_logger().info(f"   📍 Servo ID {servo.id} → position {servo.position}")
             
         elif self.search_revert_phase == 1:
             # Wait 1.5 seconds before moving Joint2
@@ -522,6 +527,9 @@ class AprilTagAlignmentController(Node):
                     self.arm_pub.publish(msg)
                     self.search_revert_phase = 2
                     self.get_logger().info("🦾 Phase 2 sent: Joint2=75")
+                    self.get_logger().info(f"📤 Message details: {len(msg.position)} servos, duration={msg.duration}s, unit={msg.position_unit}")
+                    for servo in msg.position:
+                        self.get_logger().info(f"   📍 Servo ID {servo.id} → position {servo.position}")
                     
         elif self.search_revert_phase == 2:
             # Wait 1.2 seconds for final movement to complete
@@ -582,6 +590,26 @@ class AprilTagAlignmentController(Node):
         
         self.arm_pub.publish(msg)
         self.get_logger().info(f"🔧 TEST: Command sent for servo {servo_id}")
+
+    def delayed_search_formation_init(self):
+        """Initialize search formation after a delay to ensure publisher connection."""
+        subscribers = self.arm_pub.get_subscription_count()
+        self.get_logger().info(f"🔗 Servo controller subscribers: {subscribers}")
+        
+        if subscribers == 0:
+            self.get_logger().warn("⚠️ No subscribers to /robot_2/servo_controller! Is the servo controller running?")
+        else:
+            self.get_logger().info("✅ Servo controller is listening")
+        
+        # Start search formation directly (skip the complex test)
+        self.get_logger().info("🦾 Starting search formation...")
+        self.set_search_formation()
+        
+        # Cancel this timer after first execution
+        for timer in self._timers:
+            if timer.callback == self.delayed_search_formation_init:
+                timer.cancel()
+                break
 
     def stop_robot(self):
         """Stop robot movement."""
