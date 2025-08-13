@@ -466,102 +466,71 @@ class AprilTagAlignmentController(Node):
         return cmd
 
     def set_search_formation(self):
-        """Set arm to search formation with sequential movement for clearance."""
+        """Set arm to search formation with sequential movement: Joint4&3 first, then Joint2."""
         if self.search_formation_set:
             return  # Already set, don't repeat
             
-        # Check if we need sequential movement (coming from home position)
-        if self.home_formation_set:
-            # We're coming from home position - use sequential movement for clearance
-            self.get_logger().info(f"🦾 Coming from HOME - Using sequential movement for clearance... (phase={self.search_revert_phase})")
-            current_time = self.get_clock().now()
-            
-            if self.search_revert_phase == 0:
-                # Phase 1: Move Joint4 and Joint3 first (for clearance)
-                self.get_logger().info("🦾 Search formation Phase 1: Moving Joint4 & Joint3 first...")
-                
-                msg = ServosPosition()
-                msg.position_unit = 'pulse'
-                msg.duration = 1.0  # 1 second movement
-                
-                # Move Joint4 and Joint3 first
-                phase1_positions = {
-                    4: 825,   # Joint4: 825 (Wrist1)
-                    3: 200,   # Joint3: 200 (Elbow)
-                }
-                
-                for servo_id, position in phase1_positions.items():
-                    position = max(50, min(950, position))
-                    servo = ServoPosition()
-                    servo.id = servo_id
-                    servo.position = float(position)
-                    msg.position.append(servo)
-                    self.get_logger().info(f"🔧 DEBUG: Added servo {servo_id} -> {position} to message")
-                
-                self.arm_pub.publish(msg)
-                self.search_revert_phase = 1
-                self.search_revert_start_time = current_time
-                self.get_logger().info("🦾 Phase 1 sent: Joint4=825, Joint3=200")
-                self.get_logger().info(f"🔧 DEBUG: Published message with {len(msg.position)} servos, duration={msg.duration}, unit={msg.position_unit}")
-                
-            elif self.search_revert_phase == 1:
-                # Wait 1.5 seconds before moving Joint2
-                if self.search_revert_start_time is not None:
-                    elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
-                    if self.log_counter % 10 == 0:  # Log every 1 second
-                        self.get_logger().info(f"🕐 Waiting for Joint2... {elapsed:.1f}s / 1.5s")
-                    if elapsed >= 1.5:
-                        # Phase 2: Move Joint2 last
-                        self.get_logger().info("🦾 Search formation Phase 2: Moving Joint2 last...")
-                        
-                        msg = ServosPosition()
-                        msg.position_unit = 'pulse'
-                        msg.duration = 1.0  # 1 second movement
-                        
-                        # Move Joint2 last
-                        servo = ServoPosition()
-                        servo.id = 2
-                        servo.position = float(75)  # Joint2: 75
-                        msg.position.append(servo)
-                        
-                        self.arm_pub.publish(msg)
-                        self.search_revert_phase = 2
-                        self.get_logger().info("🦾 Phase 2 sent: Joint2=75")
-                        self.get_logger().info(f"🔧 DEBUG: Published Joint2 message with {len(msg.position)} servos, duration={msg.duration}, unit={msg.position_unit}")
-                        
-            elif self.search_revert_phase == 2:
-                # Wait 1.2 seconds for final movement to complete
-                if self.search_revert_start_time is not None:
-                    elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
-                    if elapsed >= 2.7:  # 1.5 + 1.2 = 2.7 total
-                        self.search_revert_phase = 3
-                        self.search_formation_set = True
-                        self.get_logger().info("🦾 ✅ Search formation COMPLETE: Sequential movement finished!")
-        else:
-            # Initial search formation setup or not coming from home - move all at once
-            self.get_logger().info("🦾 Initial search formation setup - All joints at once...")
+        # ALWAYS use sequential movement for search formation (for clearance)
+        self.get_logger().info(f"🦾 Setting SEARCH formation with sequential movement (phase={self.search_revert_phase})")
+        current_time = self.get_clock().now()
+        
+        if self.search_revert_phase == 0:
+            # Phase 1: Move Joint4 and Joint3 first (for clearance)
+            self.get_logger().info("🦾 Search Phase 1: Moving Joint4 & Joint3 first...")
             
             msg = ServosPosition()
             msg.position_unit = 'pulse'
-            msg.duration = 2.0  # 2 second smooth movement
+            msg.duration = 1.0  # 1 second movement
             
-            # Search formation positions - all at once for initial setup
-            search_positions = {
-                2: 75,    # Joint2: 75
-                3: 200,   # Joint3: 200  
-                4: 825,   # Joint4: 825
+            # Move Joint4 and Joint3 first
+            phase1_positions = {
+                4: 825,   # Joint4: 825 (Wrist1)
+                3: 200,   # Joint3: 200 (Elbow)
             }
             
-            for servo_id, position in search_positions.items():
+            for servo_id, position in phase1_positions.items():
                 position = max(50, min(950, position))
                 servo = ServoPosition()
                 servo.id = servo_id
                 servo.position = float(position)
                 msg.position.append(servo)
+                self.get_logger().info(f"🔧 Adding servo {servo_id} -> {position}")
             
             self.arm_pub.publish(msg)
-            self.search_formation_set = True
-            self.get_logger().info("🦾 Initial search formation set: Joint2=75, Joint3=200, Joint4=825")
+            self.search_revert_phase = 1
+            self.search_revert_start_time = current_time
+            self.get_logger().info("🦾 Phase 1 sent: Joint4=825, Joint3=200")
+            
+        elif self.search_revert_phase == 1:
+            # Wait 1.5 seconds before moving Joint2
+            if self.search_revert_start_time is not None:
+                elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
+                if elapsed >= 1.5:
+                    # Phase 2: Move Joint2 last
+                    self.get_logger().info("🦾 Search Phase 2: Moving Joint2 last...")
+                    
+                    msg = ServosPosition()
+                    msg.position_unit = 'pulse'
+                    msg.duration = 1.0  # 1 second movement
+                    
+                    # Move Joint2 last
+                    servo = ServoPosition()
+                    servo.id = 2
+                    servo.position = float(75)  # Joint2: 75
+                    msg.position.append(servo)
+                    
+                    self.arm_pub.publish(msg)
+                    self.search_revert_phase = 2
+                    self.get_logger().info("🦾 Phase 2 sent: Joint2=75")
+                    
+        elif self.search_revert_phase == 2:
+            # Wait 1.2 seconds for final movement to complete
+            if self.search_revert_start_time is not None:
+                elapsed = (current_time - self.search_revert_start_time).nanoseconds / 1e9
+                if elapsed >= 2.7:  # 1.5 + 1.2 = 2.7 total
+                    self.search_revert_phase = 3
+                    self.search_formation_set = True
+                    self.get_logger().info("🦾 ✅ Search formation COMPLETE: J4=825, J3=200, J2=75")
 
     def set_home_formation(self):
         """Set arm to home formation (all joints 500) after tag found and stable."""
